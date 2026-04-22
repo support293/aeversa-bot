@@ -3,117 +3,444 @@ from twilio.twiml.messaging_response import MessagingResponse
 
 app = Flask(__name__)
 
-# ── FAQ Knowledge Base ──────────────────────────────────────────────────────
-FAQ = {
-    "not charging": {
-        "keywords": ["not charging", "won't charge", "wont charge", "not working", "no power", "vehicle not charging", "car not charging"],
-        "response": (
-            "⚡ *My vehicle is not charging – here's what to try:*\n\n"
-            "1️⃣ *Check the connector* – Make sure the cable is firmly plugged into both the charger and your vehicle.\n"
-            "2️⃣ *Check your vehicle* – Ensure your car's charge port is open and not locked.\n"
-            "3️⃣ *Restart the session* – Stop the session on the app or charger, wait 30 seconds, then start again.\n"
-            "4️⃣ *Check your account* – Make sure you have sufficient balance or an active subscription.\n"
-            "5️⃣ *Try a different connector* – If available, try another connector on the same unit.\n\n"
-            "Still not working? Reply *AGENT* to speak to a support agent. 🙏"
-        )
-    },
-    "charger off": {
-        "keywords": ["charger off", "charger is off", "unit off", "screen off", "charger not on", "charger dead", "no screen", "offline"],
-        "response": (
-            "🔌 *The charger appears to be off – here's what to do:*\n\n"
-            "1️⃣ *Check for a power outage* – Look for any load shedding or local power issues in the area.\n"
-            "2️⃣ *Check the charger screen* – If the screen is completely blank, the unit may have lost power.\n"
-            "3️⃣ *Wait 2–3 minutes* – Some units automatically reboot after a power interruption.\n"
-            "4️⃣ *Check our status page* – Visit *aeversa.co.za/status* for any known outages.\n"
-            "5️⃣ *Report the fault* – Let us know the *charger ID* (found on the unit sticker) so we can investigate.\n\n"
-            "Reply with your *Charger ID* and we will log a fault immediately. 🙏"
-        )
-    },
-    "slow charging": {
-        "keywords": ["slow", "slow charging", "charging slowly", "taking long", "low speed", "trickle", "not fast", "speed"],
-        "response": (
-            "🐢 *Charging speed is slow – here's why and what to do:*\n\n"
-            "1️⃣ *Check the charger type* – AC chargers (7–22kW) are slower than DC fast chargers (50kW+). Check the label on the unit.\n"
-            "2️⃣ *Check your vehicle settings* – Some vehicles limit charging speed. Check your car's charge settings.\n"
-            "3️⃣ *Battery temperature* – If it's very hot or cold, your vehicle may automatically reduce charging speed to protect the battery.\n"
-            "4️⃣ *Peak hours* – During peak times, some networks manage load which can affect speed.\n"
-            "5️⃣ *Cable quality* – Ensure you are using the correct cable rated for the charger's output.\n\n"
-            "If the speed seems abnormally low, reply *AGENT* and share your *Charger ID* and we will investigate. 🙏"
-        )
-    }
-}
+# ── Session State ─────────────────────────────────────────────────────────────
+# Tracks conversation state per user phone number
+user_states = {}
 
-GREETING_KEYWORDS = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "howzit", "hiya"]
-AGENT_KEYWORDS = ["agent", "human", "person", "help", "support", "speak to someone"]
+# ── Messages ──────────────────────────────────────────────────────────────────
 
 GREETING = (
-    "👋 Hello! Welcome to *Aeversa (PTY) Ltd* EV Charging Support.\n\n"
-    "I'm your virtual assistant. How can I help you today?\n\n"
-    "Please describe your issue or choose from the options below:\n\n"
+    "👋 Hello, welcome to the Aeversa helpdesk!\n\n"
+    "My name is *AE* and I am here to get you charged up. ⚡\n\n"
+    "To help you get back on the road, please type one of the options below:\n\n"
     "🔴 *1* – My vehicle is not charging\n"
     "⚫ *2* – The charger is off\n"
     "🐢 *3* – The charging speed is slow\n"
     "👤 *4* – Speak to a support agent\n\n"
-    "Simply type the number or describe your problem in your own words."
+    "Simply type the number of your issue."
 )
 
-AGENT_MSG = (
+GREAT_NEWS = (
+    "🎉 *Great news! Glad we got you sorted and back on the road!* ⚡\n\n"
+    "If you need anything else, type *MENU* to start again."
+)
+
+AGENT_INTRO = (
     "👤 *Connecting you to a support agent...*\n\n"
-    "Our team will be with you shortly. Our support hours are:\n"
-    "🕗 *Monday – Friday: 07:00 – 19:00*\n"
-    "🕗 *Saturday: 08:00 – 14:00*\n\n"
+    "Our team will be with you shortly.\n\n"
+    "🕗 *Support Hours:*\n"
+    "Monday – Friday: 07:00 – 19:00\n"
+    "Saturday: 08:00 – 14:00\n\n"
     "For urgent faults outside these hours, please email:\n"
-    "📧 *support@aeversa.co.za*\n\n"
-    "Please share your *Charger ID* and *vehicle model* so we can assist you faster. 🙏"
+    "📧 *support@aeversa.co.za*"
 )
 
 FALLBACK = (
-    "🤔 I'm sorry, I didn't quite understand that.\n\n"
-    "Please choose one of the following:\n\n"
-    "🔴 *1* – My vehicle is not charging\n"
-    "⚫ *2* – The charger is off\n"
-    "🐢 *3* – The charging speed is slow\n"
-    "👤 *4* – Speak to a support agent\n\n"
-    "Or type *MENU* to see options again."
+    "🤔 I didn't quite understand that.\n\n"
+    "Please type *MENU* to see the options again, or type *AGENT* to speak to a support agent."
 )
 
-# ── Message Handler ──────────────────────────────────────────────────────────
-def get_response(message: str) -> str:
-    msg = message.strip().lower()
+# ── State Machine ─────────────────────────────────────────────────────────────
 
-    # Greetings
-    if any(greet in msg for greet in GREETING_KEYWORDS):
+def handle_message(user_id: str, msg: str) -> str:
+    msg = msg.strip().lower()
+    state = user_states.get(user_id, {"step": "start"})
+    step = state.get("step", "start")
+
+    # ── Global Commands ───────────────────────────────────────────────────────
+    if msg in ["menu", "hi", "hello", "hey", "start", "hiya", "howzit", "good morning", "good afternoon"]:
+        user_states[user_id] = {"step": "start"}
         return GREETING
 
-    # Menu shortcuts
-    if msg in ["1", "not charging"]:
-        return FAQ["not charging"]["response"]
-    if msg in ["2", "charger off"]:
-        return FAQ["charger off"]["response"]
-    if msg in ["3", "slow charging"]:
-        return FAQ["slow charging"]["response"]
-    if msg in ["4", "menu"]:
-        return GREETING
+    if msg in ["agent", "human", "person", "speak to someone"] and step == "start":
+        user_states[user_id] = {"step": "start"}
+        return AGENT_INTRO
 
-    # Agent request
-    if any(word in msg for word in AGENT_KEYWORDS):
-        return AGENT_MSG
+    # ── MENU SELECTION ────────────────────────────────────────────────────────
+    if step == "start":
+        if msg == "1":
+            user_states[user_id] = {"step": "opt1_key_removed"}
+            return (
+                "🔴 *Vehicle Not Charging*\n\n"
+                "Let's get this sorted! First things first:\n\n"
+                "Is your vehicle switched off and the key removed from the ignition?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "2":
+            user_states[user_id] = {"step": "opt2_power_on_site"}
+            return (
+                "⚫ *Charger is Off*\n\n"
+                "Let's investigate! 🔍\n\n"
+                "Is there power on site? (e.g. are lights or other appliances working?)\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "3":
+            user_states[user_id] = {"step": "opt3_restart_session"}
+            return (
+                "🐢 *Slow Charging*\n\n"
+                "Let's get your speed up! ⚡\n\n"
+                "Can you stop the charging session and start it again?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "4":
+            user_states[user_id] = {"step": "start"}
+            return AGENT_INTRO
+        else:
+            return GREETING
 
-    # Keyword matching across FAQs
-    for faq in FAQ.values():
-        if any(keyword in msg for keyword in faq["keywords"]):
-            return faq["response"]
+    # ══════════════════════════════════════════════════════════════════════════
+    # OPTION 1 – VEHICLE NOT CHARGING
+    # ══════════════════════════════════════════════════════════════════════════
 
-    # Fallback
+    if step == "opt1_key_removed":
+        if msg == "yes":
+            user_states[user_id] = {"step": "opt1_replug_fixed"}
+            return (
+                "✅ Good.\n\n"
+                "Please *unplug the charging cable* and plug it back in firmly on both ends.\n\n"
+                "Has this fixed the issue? Is your vehicle now charging?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "no":
+            user_states[user_id] = {"step": "opt1_removed_key_try"}
+            return (
+                "No problem!\n\n"
+                "Please *remove the key from the ignition*, make sure the vehicle is switched off, "
+                "and then try to charge again.\n\n"
+                "Is your vehicle now charging?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is your vehicle switched off and key removed from the ignition?"
+
+    if step == "opt1_replug_fixed":
+        if msg == "yes":
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        elif msg == "no":
+            user_states[user_id] = {"step": "opt1_error_check"}
+            return (
+                "Sorry to hear that. 😔\n\n"
+                "Is there an *error message* on the charger screen?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is your vehicle now charging?"
+
+    if step == "opt1_removed_key_try":
+        if msg == "yes":
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        elif msg == "no":
+            user_states[user_id] = {"step": "opt1_error_check"}
+            return (
+                "Sorry to hear that. 😔\n\n"
+                "Is there an *error message* on the charger screen?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is your vehicle now charging?"
+
+    if step == "opt1_error_check":
+        if msg == "yes":
+            user_states[user_id] = {"step": "opt1_error_detail"}
+            return (
+                "📋 What does the *error message* say?\n\n"
+                "Please type the error message exactly as it appears on the screen."
+            )
+        elif msg == "no":
+            user_states[user_id] = {"step": "opt1_try_another_charger"}
+            return (
+                "No error message — understood.\n\n"
+                "Is there *another charger* available at this location that you could try?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is there an error message on the charger screen?"
+
+    if step == "opt1_error_detail":
+        error_msg = msg
+        user_states[user_id] = {"step": "start"}
+        return (
+            f"Thank you for that information. I have logged the error: *\"{error_msg}\"*\n\n"
+            f"{AGENT_INTRO}"
+        )
+
+    if step == "opt1_try_another_charger":
+        if msg == "yes":
+            user_states[user_id] = {"step": "opt1_other_charger_working"}
+            return (
+                "Great! Please try the other charger and let us know:\n\n"
+                "Is your vehicle now charging on the other charger?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "no":
+            user_states[user_id] = {"step": "start"}
+            return (
+                "No problem, we will get an agent to assist you right away.\n\n"
+                f"{AGENT_INTRO}"
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is there another charger available at this location?"
+
+    if step == "opt1_other_charger_working":
+        if msg == "yes":
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        elif msg == "no":
+            user_states[user_id] = {"step": "opt1_site_name"}
+            return (
+                "I'm sorry to hear that. 😔\n\n"
+                "Which *site* are you calling from? Please type the site name."
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is your vehicle charging on the other charger?"
+
+    if step == "opt1_site_name":
+        site = msg
+        user_states[user_id] = {"step": "start"}
+        return (
+            f"Thank you. I have logged your location as *\"{site}\"*.\n\n"
+            f"{AGENT_INTRO}"
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # OPTION 2 – CHARGER IS OFF
+    # ══════════════════════════════════════════════════════════════════════════
+
+    if step == "opt2_power_on_site":
+        if msg == "yes":
+            user_states[user_id] = {"step": "opt2_another_charger"}
+            return (
+                "Okay, there is power on site. 🔍\n\n"
+                "📸 *Please send a photo of the charger screen* so we can see what is displayed.\n\n"
+                "Is there *another charger* available on site?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "no":
+            user_states[user_id] = {"step": "opt2_no_power_site_name"}
+            return (
+                "It seems there may be a power outage on site. ⚠️\n\n"
+                "📸 *Please send a photo of the charger screen* so we can confirm.\n\n"
+                "Which *site* are you calling from? Please type the site name."
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is there power on site?"
+
+    if step == "opt2_another_charger":
+        if msg == "yes":
+            user_states[user_id] = {"step": "opt2_other_charger_works"}
+            return (
+                "Great! Please try the other charger.\n\n"
+                "📸 *Please also send a photo of that charger screen.*\n\n"
+                "Is the other charger working?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "no":
+            user_states[user_id] = {"step": "opt2_site_name_escalate"}
+            return (
+                "Understood, no other charger available.\n\n"
+                "Which *site* are you calling from? Please type the site name."
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is there another charger available on site?"
+
+    if step == "opt2_other_charger_works":
+        if msg == "yes":
+            user_states[user_id] = {"step": "start"}
+            return (
+                "🎉 *Great, glad we got you sorted!*\n\n"
+                "We will log a fault on the affected unit and have it investigated. ⚡\n\n"
+                "Type *MENU* if you need anything else."
+            )
+        elif msg == "no":
+            user_states[user_id] = {"step": "opt2_site_name_escalate"}
+            return (
+                "Sorry to hear that. 😔\n\n"
+                "Which *site* are you calling from? Please type the site name."
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is the other charger working?"
+
+    if step in ["opt2_site_name_escalate", "opt2_no_power_site_name"]:
+        site = msg
+        user_states[user_id] = {"step": "start"}
+        return (
+            f"Thank you. I have logged your location as *\"{site}\"*.\n\n"
+            f"{AGENT_INTRO}"
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # OPTION 3 – SLOW CHARGING
+    # ══════════════════════════════════════════════════════════════════════════
+
+    if step == "opt3_restart_session":
+        if msg in ["yes", "no"]:
+            user_states[user_id] = {"step": "opt3_still_slow"}
+            if msg == "yes":
+                return (
+                    "Great! Please stop the session and start it again.\n\n"
+                    "Is the charging speed *still slow* after restarting?\n\n"
+                    "Reply *YES* or *NO*"
+                )
+            else:
+                return (
+                    "No problem.\n\n"
+                    "Is the charging speed *still slow*?\n\n"
+                    "Reply *YES* or *NO*"
+                )
+        else:
+            return "Please reply *YES* or *NO*. Can you stop the charging session and start it again?"
+
+    if step == "opt3_still_slow":
+        if msg == "no":
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        elif msg == "yes":
+            user_states[user_id] = {"step": "opt3_which_site"}
+            return (
+                "Let's dig deeper. 🔍\n\n"
+                "Which *site* are you calling from?\n\n"
+                "Reply *1* for Wattspot or *2* for Other"
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is the charging speed still slow?"
+
+    if step == "opt3_which_site":
+        if msg in ["1", "wattspot"]:
+            user_states[user_id] = {"step": "opt3_wattspot_wifi"}
+            return (
+                "📍 *Wattspot Site*\n\n"
+                "Please check the *WiFi symbol at the top of the charger.*\n\n"
+                "📸 Please send a photo of the charger screen.\n\n"
+                "Is the WiFi symbol *White* or *Red*?\n\n"
+                "Reply *WHITE* or *RED*"
+            )
+        elif msg in ["2", "other"]:
+            user_states[user_id] = {"step": "opt3_other_4g"}
+            return (
+                "📍 *Other Site*\n\n"
+                "Please check the *bottom left of the charger screen.*\n\n"
+                "📸 Please send a photo of the charger screen.\n\n"
+                "What do you see?\n\n"
+                "Reply:\n"
+                "*1* – 4G symbol is greyed out\n"
+                "*2* – There is a red cross on a symbol\n"
+                "*3* – Everything looks normal"
+            )
+        else:
+            return "Please reply *1* for Wattspot or *2* for Other."
+
+    # ── Wattspot Flow ─────────────────────────────────────────────────────────
+
+    if step == "opt3_wattspot_wifi":
+        if msg == "white":
+            user_states[user_id] = {"step": "start"}
+            return (
+                "✅ The charger is *online* (WiFi is white).\n\n"
+                "Thank you for the photo. We are escalating this to our technical team.\n\n"
+                f"{AGENT_INTRO}"
+            )
+        elif msg == "red":
+            user_states[user_id] = {"step": "opt3_wattspot_after_wait"}
+            return (
+                "🔴 The charger appears to be *offline* (WiFi is red).\n\n"
+                "Please *wait 5 minutes* and check the WiFi symbol again.\n\n"
+                "After 5 minutes, is the WiFi symbol now *White* or still *Red*?\n\n"
+                "Reply *WHITE* or *RED*"
+            )
+        else:
+            return "Please reply *WHITE* or *RED*. What colour is the WiFi symbol on the charger?"
+
+    if step == "opt3_wattspot_after_wait":
+        if msg == "red":
+            user_states[user_id] = {"step": "start"}
+            return (
+                "🔴 The charger is still offline.\n\n"
+                "Please *contact us again* once the WiFi signal changes to white, "
+                "or our team will investigate the unit.\n\n"
+                f"{AGENT_INTRO}"
+            )
+        elif msg == "white":
+            user_states[user_id] = {"step": "opt3_wattspot_final_restart"}
+            return (
+                "✅ Great, the charger is back online!\n\n"
+                "Please *stop the charging session and start it again.*\n\n"
+                "Is the charging speed still slow?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        else:
+            return "Please reply *WHITE* or *RED*. What colour is the WiFi symbol now?"
+
+    if step == "opt3_wattspot_final_restart":
+        if msg == "no":
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        elif msg == "yes":
+            user_states[user_id] = {"step": "start"}
+            return (
+                "We are sorry the issue persists. 😔\n\n"
+                f"{AGENT_INTRO}"
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is the charging speed still slow?"
+
+    # ── Other Site Flow ───────────────────────────────────────────────────────
+
+    if step == "opt3_other_4g":
+        if msg == "1":
+            user_states[user_id] = {"step": "start"}
+            return (
+                "⚠️ The *4G symbol is greyed out* — the charger is offline.\n\n"
+                "Please wait while we investigate.\n\n"
+                f"{AGENT_INTRO}"
+            )
+        elif msg == "2":
+            user_states[user_id] = {"step": "start"}
+            return (
+                "⚠️ A *red cross* on the symbol indicates the charger is offline.\n\n"
+                f"{AGENT_INTRO}"
+            )
+        elif msg == "3":
+            user_states[user_id] = {"step": "opt3_other_final_restart"}
+            return (
+                "✅ The charger appears connected.\n\n"
+                "Please *restart the charging session* now.\n\n"
+                "Is the charging speed still slow after restarting?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        else:
+            return (
+                "Please reply:\n"
+                "*1* – 4G symbol is greyed out\n"
+                "*2* – There is a red cross on a symbol\n"
+                "*3* – Everything looks normal"
+            )
+
+    if step == "opt3_other_final_restart":
+        if msg == "no":
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        elif msg == "yes":
+            user_states[user_id] = {"step": "start"}
+            return (
+                "We are sorry the issue persists. 😔\n\n"
+                f"{AGENT_INTRO}"
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is the charging speed still slow after restarting?"
+
+    # ── Default Fallback ──────────────────────────────────────────────────────
     return FALLBACK
 
 
-# ── Webhook Route ────────────────────────────────────────────────────────────
+# ── Webhook ───────────────────────────────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
 def webhook():
     incoming = request.form.get("Body", "").strip()
+    sender = request.form.get("From", "unknown")
     resp = MessagingResponse()
-    resp.message(get_response(incoming))
+    resp.message(handle_message(sender, incoming))
     return str(resp)
 
 
