@@ -32,7 +32,7 @@ AGENT_INTRO = (
     "Monday – Friday: 07:00 – 19:00\n"
     "Saturday: 08:00 – 14:00\n\n"
     "For urgent faults outside these hours, please email:\n"
-    "📧 *support@aeversa.co.za*"
+    "📧 *support@aeversa.com*"
 )
 
 FALLBACK = (
