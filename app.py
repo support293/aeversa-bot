@@ -1,7 +1,15 @@
+import os
+import json
+import requests
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 
 app = Flask(__name__)
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 # ── Session State ─────────────────────────────────────────────────────────────
 # Tracks conversation state per user phone number
@@ -12,12 +20,12 @@ user_states = {}
 GREETING = (
     "👋 Hello, welcome to the Aeversa helpdesk!\n\n"
     "My name is *AE* and I am here to get you charged up. ⚡\n\n"
-    "To help you get back on the road, please type one of the options below:\n\n"
+    "To help you get back on the road, please type one of the options below, "
+    "or just describe your problem in your own words and I'll help you out:\n\n"
     "🔴 *1* – My vehicle is not charging\n"
     "⚫ *2* – The charger is off\n"
     "🐢 *3* – The charging speed is slow\n"
     "👤 *4* – Speak to a support agent\n\n"
-    "Simply type the number of your issue."
 )
 
 GREAT_NEWS = (
@@ -32,7 +40,7 @@ AGENT_INTRO = (
     "Monday – Friday: 07:00 – 19:00\n"
     "Saturday: 08:00 – 14:00\n\n"
     "For urgent faults outside these hours, please email:\n"
-    "📧 *support@aeversa.com*"
+    "📧 *support@aeversa.co.za*"
 )
 
 FALLBACK = (
@@ -40,15 +48,82 @@ FALLBACK = (
     "Please type *MENU* to see the options again, or type *AGENT* to speak to a support agent."
 )
 
+# ── Claude AI – Intent Classification & General Q&A ──────────────────────────
+
+AE_SYSTEM_PROMPT = """You are AE, the WhatsApp support assistant for Aeversa (PTY) Ltd, a South African EV charge point operator.
+
+Your job right now is to read a customer's free-text WhatsApp message and decide what they need. You must respond with ONLY a JSON object (no other text, no markdown fences) in this exact format:
+
+{"intent": "...", "reply": "..."}
+
+Where "intent" is ONE of:
+- "not_charging" — if the customer's vehicle is not charging
+- "charger_off" — if the charger itself appears offline/off/dead/no screen
+- "slow_charging" — if charging is happening but slower than expected
+- "agent" — if the customer explicitly wants a human, or has a billing/account/complaint issue unrelated to a technical fault
+- "general" — if it's a general question you can answer directly (e.g. "what are your hours", "where are your chargers", "how does charging work", "what is the price")
+- "greeting" — if it's just a greeting with no specific issue
+- "unclear" — if you genuinely cannot tell what they want
+
+If intent is "not_charging", "charger_off", "slow_charging", or "agent", set "reply" to a short one-sentence acknowledgment (e.g. "It sounds like your vehicle isn't charging — let's sort this out.").
+
+If intent is "general", set "reply" to a helpful, friendly, concise answer (2-4 sentences max) using ONLY this company info:
+- Aeversa operates EV charge points across South Africa
+- Support hours: Monday-Friday 07:00-19:00, Saturday 08:00-14:00
+- Customers pay per kWh consumed, billed via the Aeversa app
+- For account/billing/app issues, suggest emailing support@aeversa.co.za
+- Do not invent specific prices, locations, or details you don't know — if unsure, say you'll connect them with a support agent who can confirm
+
+If intent is "greeting", set "reply" to "" (empty string).
+If intent is "unclear", set "reply" to "" (empty string).
+
+Be warm, concise, and use a friendly South African tone. Never make up technical specifications, pricing, or site details you don't have."""
+
+
+def ask_claude(message_text: str):
+    """Calls Claude to classify intent and optionally generate a reply.
+    Returns dict: {"intent": str, "reply": str} or None on failure."""
+    if not ANTHROPIC_API_KEY:
+        return None
+
+    try:
+        response = requests.post(
+            ANTHROPIC_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": ANTHROPIC_MODEL,
+                "max_tokens": 300,
+                "system": AE_SYSTEM_PROMPT,
+                "messages": [{"role": "user", "content": message_text}],
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        data = response.json()
+        text = "".join(block.get("text", "") for block in data.get("content", []))
+        text = text.strip().replace("```json", "").replace("```", "").strip()
+        parsed = json.loads(text)
+        if "intent" in parsed:
+            return parsed
+        return None
+    except Exception as e:
+        print(f"Claude API error: {e}")
+        return None
+
+
 # ── State Machine ─────────────────────────────────────────────────────────────
 
-def handle_message(user_id: str, msg: str) -> str:
-    msg = msg.strip().lower()
+def handle_message(user_id: str, msg_raw: str) -> str:
+    msg = msg_raw.strip().lower()
     state = user_states.get(user_id, {"step": "start"})
     step = state.get("step", "start")
 
     # ── Global Commands ───────────────────────────────────────────────────────
-    if msg in ["menu", "hi", "hello", "hey", "start", "hiya", "howzit", "good morning", "good afternoon"]:
+    if msg in ["menu", "start"]:
         user_states[user_id] = {"step": "start"}
         return GREETING
 
@@ -56,8 +131,9 @@ def handle_message(user_id: str, msg: str) -> str:
         user_states[user_id] = {"step": "start"}
         return AGENT_INTRO
 
-    # ── MENU SELECTION ────────────────────────────────────────────────────────
+    # ── MENU / START STEP ─────────────────────────────────────────────────────
     if step == "start":
+        # Direct number selections (fast path, no AI needed)
         if msg == "1":
             user_states[user_id] = {"step": "opt1_key_removed"}
             return (
@@ -85,8 +161,61 @@ def handle_message(user_id: str, msg: str) -> str:
         elif msg == "4":
             user_states[user_id] = {"step": "start"}
             return AGENT_INTRO
-        else:
+
+        # Greetings — quick local match, no need to call AI
+        if msg in ["hi", "hello", "hey", "hiya", "howzit", "good morning", "good afternoon", "good evening"]:
+            user_states[user_id] = {"step": "start"}
             return GREETING
+
+        # ── Free text — ask Claude to understand intent ─────────────────────
+        ai_result = ask_claude(msg_raw)
+
+        if ai_result is None:
+            # AI unavailable or failed — fall back gracefully
+            return GREETING
+
+        intent = ai_result.get("intent", "unclear")
+        ai_reply = ai_result.get("reply", "")
+
+        if intent == "not_charging":
+            user_states[user_id] = {"step": "opt1_key_removed"}
+            prefix = f"{ai_reply}\n\n" if ai_reply else ""
+            return (
+                f"{prefix}🔴 *Vehicle Not Charging*\n\n"
+                "Is your vehicle switched off and the key removed from the ignition?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif intent == "charger_off":
+            user_states[user_id] = {"step": "opt2_power_on_site"}
+            prefix = f"{ai_reply}\n\n" if ai_reply else ""
+            return (
+                f"{prefix}⚫ *Charger is Off*\n\n"
+                "Is there power on site? (e.g. are lights or other appliances working?)\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif intent == "slow_charging":
+            user_states[user_id] = {"step": "opt3_restart_session"}
+            prefix = f"{ai_reply}\n\n" if ai_reply else ""
+            return (
+                f"{prefix}🐢 *Slow Charging*\n\n"
+                "Can you stop the charging session and start it again?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif intent == "agent":
+            user_states[user_id] = {"step": "start"}
+            prefix = f"{ai_reply}\n\n" if ai_reply else ""
+            return f"{prefix}{AGENT_INTRO}"
+        elif intent == "general":
+            user_states[user_id] = {"step": "start"}
+            return (
+                f"{ai_reply}\n\n"
+                "Is there anything else I can help with? Type *MENU* to see support options."
+            )
+        elif intent == "greeting":
+            user_states[user_id] = {"step": "start"}
+            return GREETING
+        else:  # unclear
+            return FALLBACK
 
     # ══════════════════════════════════════════════════════════════════════════
     # OPTION 1 – VEHICLE NOT CHARGING
@@ -159,7 +288,7 @@ def handle_message(user_id: str, msg: str) -> str:
             return "Please reply *YES* or *NO*. Is there an error message on the charger screen?"
 
     if step == "opt1_error_detail":
-        error_msg = msg
+        error_msg = msg_raw.strip()
         user_states[user_id] = {"step": "start"}
         return (
             f"Thank you for that information. I have logged the error: *\"{error_msg}\"*\n\n"
@@ -197,7 +326,7 @@ def handle_message(user_id: str, msg: str) -> str:
             return "Please reply *YES* or *NO*. Is your vehicle charging on the other charger?"
 
     if step == "opt1_site_name":
-        site = msg
+        site = msg_raw.strip()
         user_states[user_id] = {"step": "start"}
         return (
             f"Thank you. I have logged your location as *\"{site}\"*.\n\n"
@@ -263,7 +392,7 @@ def handle_message(user_id: str, msg: str) -> str:
             return "Please reply *YES* or *NO*. Is the other charger working?"
 
     if step in ["opt2_site_name_escalate", "opt2_no_power_site_name"]:
-        site = msg
+        site = msg_raw.strip()
         user_states[user_id] = {"step": "start"}
         return (
             f"Thank you. I have logged your location as *\"{site}\"*.\n\n"
@@ -442,6 +571,12 @@ def webhook():
     resp = MessagingResponse()
     resp.message(handle_message(sender, incoming))
     return str(resp)
+
+
+@app.route("/", methods=["GET"])
+def health_check():
+    ai_status = "configured" if ANTHROPIC_API_KEY else "NOT configured"
+    return f"AE Bot is running. Claude AI: {ai_status}"
 
 
 if __name__ == "__main__":
