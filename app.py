@@ -11,8 +11,46 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
+# ── Load Knowledge Base ────────────────────────────────────────────────────────
+KB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge_base.json")
+
+def load_knowledge_base():
+    try:
+        with open(KB_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Failed to load knowledge base: {e}")
+        return {"company_info": {}, "faqs": []}
+
+KNOWLEDGE_BASE = load_knowledge_base()
+
+
+def build_kb_text(kb: dict) -> str:
+    """Formats the knowledge base into plain text for Claude's system prompt."""
+    lines = []
+    info = kb.get("company_info", {})
+    if info:
+        lines.append(f"Company: {info.get('name', '')}")
+        lines.append(f"Support Hours: {info.get('support_hours', '')}")
+        lines.append(f"Support Email: {info.get('support_email', '')}")
+        lines.append("")
+
+    lines.append("FAQ KNOWLEDGE BASE (use this to answer general questions accurately):")
+    current_category = None
+    for item in kb.get("faqs", []):
+        category = item.get("category", "General")
+        if category != current_category:
+            lines.append(f"\n## {category}")
+            current_category = category
+        lines.append(f"Q: {item.get('question', '')}")
+        lines.append(f"A: {item.get('answer', '')}")
+    return "\n".join(lines)
+
+
+KB_TEXT = build_kb_text(KNOWLEDGE_BASE)
+SALES_INFO = KNOWLEDGE_BASE.get("company_info", {}).get("sales_contact", {})
+
 # ── Session State ─────────────────────────────────────────────────────────────
-# Tracks conversation state per user phone number
 user_states = {}
 
 # ── Messages ──────────────────────────────────────────────────────────────────
@@ -48,41 +86,58 @@ FALLBACK = (
     "Please type *MENU* to see the options again, or type *AGENT* to speak to a support agent."
 )
 
-# ── Claude AI – Intent Classification & General Q&A ──────────────────────────
+def sales_redirect_message() -> str:
+    name = SALES_INFO.get("name", "our sales team")
+    email = SALES_INFO.get("email", "")
+    phone = SALES_INFO.get("phone", "")
+    return (
+        "💼 That sounds like a great opportunity!\n\n"
+        "I'm focused on technical charger support, so for sales, new installations, "
+        "fleet solutions, or partnership enquiries, please reach out to:\n\n"
+        f"👤 *{name}*\n"
+        f"📧 {email}\n"
+        f"📞 {phone}\n\n"
+        "They'll be happy to assist you! Is there anything else I can help with today?"
+    )
 
-AE_SYSTEM_PROMPT = """You are AE, the WhatsApp support assistant for Aeversa (PTY) Ltd, a South African EV charge point operator.
 
-Your job right now is to read a customer's free-text WhatsApp message and decide what they need. You must respond with ONLY a JSON object (no other text, no markdown fences) in this exact format:
+# ── Claude AI – Intent Classification & Knowledge-Grounded Q&A ───────────────
 
-{"intent": "...", "reply": "..."}
+AE_SYSTEM_PROMPT = f"""You are AE, the WhatsApp support assistant for Aeversa (PTY) Ltd, a South African EV charge point operator.
+
+Your job is to read a customer's free-text WhatsApp message and decide what they need. You must respond with ONLY a JSON object (no other text, no markdown fences) in this exact format:
+
+{{"intent": "...", "reply": "..."}}
 
 Where "intent" is ONE of:
 - "not_charging" — if the customer's vehicle is not charging
 - "charger_off" — if the charger itself appears offline/off/dead/no screen
 - "slow_charging" — if charging is happening but slower than expected
-- "agent" — if the customer explicitly wants a human, or has a billing/account/complaint issue unrelated to a technical fault
-- "general" — if it's a general question you can answer directly (e.g. "what are your hours", "where are your chargers", "how does charging work", "what is the price")
+- "agent" — if the customer explicitly wants a human, or has a billing/account/complaint issue requiring escalation
+- "sales" — if the customer is asking about new charger installations, fleet solutions, becoming a site host/partner, business pricing, or any new business enquiry
+- "general" — if it's a general question you can answer directly using the FAQ knowledge base below
 - "greeting" — if it's just a greeting with no specific issue
 - "unclear" — if you genuinely cannot tell what they want
 
-If intent is "not_charging", "charger_off", "slow_charging", or "agent", set "reply" to a short one-sentence acknowledgment (e.g. "It sounds like your vehicle isn't charging — let's sort this out.").
+If intent is "not_charging", "charger_off", "slow_charging", or "agent", set "reply" to a short one-sentence acknowledgment.
 
-If intent is "general", set "reply" to a helpful, friendly, concise answer (2-4 sentences max) using ONLY this company info:
-- Aeversa operates EV charge points across South Africa
-- Support hours: Monday-Friday 07:00-19:00, Saturday 08:00-14:00
-- Customers pay per kWh consumed, billed via the Aeversa app
-- For account/billing/app issues, suggest emailing support@aeversa.co.za
-- Do not invent specific prices, locations, or details you don't know — if unsure, say you'll connect them with a support agent who can confirm
+If intent is "sales", set "reply" to "" (empty string) — this will be handled separately.
 
-If intent is "greeting", set "reply" to "" (empty string).
-If intent is "unclear", set "reply" to "" (empty string).
+If intent is "general", set "reply" to a helpful, friendly, concise answer (2-4 sentences max) using ONLY the FAQ knowledge base below. If the knowledge base does not contain the answer, do NOT make one up — instead set intent to "agent" and reply with an acknowledgment that you'll connect them to someone who can help.
 
-Be warm, concise, and use a friendly South African tone. Never make up technical specifications, pricing, or site details you don't have."""
+If intent is "greeting" or "unclear", set "reply" to "" (empty string).
+
+Be warm, concise, and use a friendly South African tone. Never invent technical specifications, pricing, or details not in the knowledge base below.
+
+─────────────────────────────
+{KB_TEXT}
+─────────────────────────────
+"""
 
 
 def ask_claude(message_text: str):
     """Calls Claude to classify intent and optionally generate a reply.
-    Returns dict: {"intent": str, "reply": str} or None on failure."""
+    Returns dict: {{"intent": str, "reply": str}} or None on failure."""
     if not ANTHROPIC_API_KEY:
         return None
 
@@ -96,7 +151,7 @@ def ask_claude(message_text: str):
             },
             json={
                 "model": ANTHROPIC_MODEL,
-                "max_tokens": 300,
+                "max_tokens": 400,
                 "system": AE_SYSTEM_PROMPT,
                 "messages": [{"role": "user", "content": message_text}],
             },
@@ -131,9 +186,12 @@ def handle_message(user_id: str, msg_raw: str) -> str:
         user_states[user_id] = {"step": "start"}
         return AGENT_INTRO
 
+    if msg in ["sales", "sales rep", "sales agent"] and step == "start":
+        user_states[user_id] = {"step": "start"}
+        return sales_redirect_message()
+
     # ── MENU / START STEP ─────────────────────────────────────────────────────
     if step == "start":
-        # Direct number selections (fast path, no AI needed)
         if msg == "1":
             user_states[user_id] = {"step": "opt1_key_removed"}
             return (
@@ -162,7 +220,6 @@ def handle_message(user_id: str, msg_raw: str) -> str:
             user_states[user_id] = {"step": "start"}
             return AGENT_INTRO
 
-        # Greetings — quick local match, no need to call AI
         if msg in ["hi", "hello", "hey", "hiya", "howzit", "good morning", "good afternoon", "good evening"]:
             user_states[user_id] = {"step": "start"}
             return GREETING
@@ -171,7 +228,6 @@ def handle_message(user_id: str, msg_raw: str) -> str:
         ai_result = ask_claude(msg_raw)
 
         if ai_result is None:
-            # AI unavailable or failed — fall back gracefully
             return GREETING
 
         intent = ai_result.get("intent", "unclear")
@@ -205,6 +261,9 @@ def handle_message(user_id: str, msg_raw: str) -> str:
             user_states[user_id] = {"step": "start"}
             prefix = f"{ai_reply}\n\n" if ai_reply else ""
             return f"{prefix}{AGENT_INTRO}"
+        elif intent == "sales":
+            user_states[user_id] = {"step": "start"}
+            return sales_redirect_message()
         elif intent == "general":
             user_states[user_id] = {"step": "start"}
             return (
@@ -214,7 +273,7 @@ def handle_message(user_id: str, msg_raw: str) -> str:
         elif intent == "greeting":
             user_states[user_id] = {"step": "start"}
             return GREETING
-        else:  # unclear
+        else:
             return FALLBACK
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -576,7 +635,8 @@ def webhook():
 @app.route("/", methods=["GET"])
 def health_check():
     ai_status = "configured" if ANTHROPIC_API_KEY else "NOT configured"
-    return f"AE Bot is running. Claude AI: {ai_status}"
+    kb_count = len(KNOWLEDGE_BASE.get("faqs", []))
+    return f"AE Bot is running. Claude AI: {ai_status}. Knowledge base: {kb_count} FAQs loaded."
 
 
 if __name__ == "__main__":
