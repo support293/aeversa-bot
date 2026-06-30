@@ -1,0 +1,144 @@
+{
+  "company_info": {
+    "name": "Aeversa (PTY) Ltd",
+    "support_hours": "Monday - Friday: 07:00 - 19:00, Saturday: 08:00 - 14:00",
+    "support_email": "support@aeversa.co.za",
+    "sales_contact": {
+      "name": "John Ford",
+      "email": "sales@aeversa.com",
+      "phone": "0849006267"
+    }
+  },
+  "faqs": [
+    {
+      "category": "Getting Started",
+      "question": "How do I start a charging session?",
+      "answer": "Open the Aeversa app, select the charger you are connected to, and tap 'Start Charging'. Make sure your cable is firmly plugged into both your vehicle and the charger before starting."
+    },
+    {
+      "category": "Getting Started",
+      "question": "How do I stop a charging session?",
+      "answer": "Open the Aeversa app, go to your active session, and tap 'Stop Charging'. You can also stop a session directly on the charger screen if it has that option."
+    },
+    {
+      "category": "Getting Started",
+      "question": "Do I need an account to use a charger?",
+      "answer": "Yes, you need to register and create an account on the Aeversa app before you can start charging. This allows us to bill you correctly and keep a record of your charging history."
+    },
+    {
+      "category": "Payment & Billing",
+      "question": "How does billing work?",
+      "answer": "You are billed per kWh (kilowatt-hour) of energy consumed during your charging session. Charges are processed automatically through the Aeversa app using your saved payment method."
+    },
+    {
+      "category": "Payment & Billing",
+      "question": "What payment methods are accepted?",
+      "answer": "The Aeversa app accepts major debit and credit cards. Payment is linked to your account and charged automatically after each session."
+    },
+    {
+      "category": "Payment & Billing",
+      "question": "Why was I charged for a session I didn't complete?",
+      "answer": "You are only billed for the energy actually delivered to your vehicle. If you believe there is a billing error, please email support@aeversa.co.za with your session details and we will investigate."
+    },
+    {
+      "category": "Payment & Billing",
+      "question": "Can I get a receipt or invoice for my charging session?",
+      "answer": "Yes, all session receipts are available in the 'History' section of the Aeversa app. You can also request a formal invoice by emailing support@aeversa.co.za."
+    },
+    {
+      "category": "Charger Types",
+      "question": "What is the difference between AC and DC charging?",
+      "answer": "AC (Alternating Current) chargers are slower, typically 7-22kW, and are ideal for longer parking durations like at the office or home. DC (Direct Current) chargers are fast chargers, typically 50kW and above, designed for quick top-ups on the road."
+    },
+    {
+      "category": "Charger Types",
+      "question": "How do I know which charger type is at a site?",
+      "answer": "The charger type and maximum output (kW) is displayed on the unit itself and also shown in the Aeversa app when you select that charger location."
+    },
+    {
+      "category": "Charger Types",
+      "question": "What connector types do Aeversa chargers use?",
+      "answer": "Our chargers support standard connector types used in South Africa, including Type 2 for AC charging and CCS2 for DC fast charging. Please check your vehicle's compatible connector type before charging."
+    },
+    {
+      "category": "Finding Chargers",
+      "question": "How do I find the nearest Aeversa charger?",
+      "answer": "Open the Aeversa app and tap the map icon to see all nearby charging locations, their availability, and charger types in real time."
+    },
+    {
+      "category": "Finding Chargers",
+      "question": "Can I reserve a charger in advance?",
+      "answer": "Charger reservation availability depends on the specific site. Please check the Aeversa app for reservation options at your preferred location."
+    },
+    {
+      "category": "Technical Issues",
+      "question": "My vehicle is not charging, what should I do?",
+      "answer": "Please select option 1 from the AE support menu and I'll guide you through a quick troubleshooting process to get you charging again."
+    },
+    {
+      "category": "Technical Issues",
+      "question": "The charger screen is blank or off, what should I do?",
+      "answer": "Please select option 2 from the AE support menu and I'll help you check if this is a site power issue or a charger fault."
+    },
+    {
+      "category": "Technical Issues",
+      "question": "My charging speed seems slower than expected, what should I do?",
+      "answer": "Please select option 3 from the AE support menu and I'll walk you through some quick checks to identify the cause."
+    },
+    {
+      "category": "Technical Issues",
+      "question": "Why does my vehicle charge slower in cold or hot weather?",
+      "answer": "Extreme temperatures can cause your vehicle's battery management system to automatically reduce charging speed to protect the battery. This is normal vehicle behaviour and not a fault with the charger."
+    },
+    {
+      "category": "Technical Issues",
+      "question": "Can I use any charging cable, or do I need a specific one?",
+      "answer": "Most Aeversa AC chargers require you to bring your own Type 2 cable, while our DC fast chargers have a tethered cable built into the unit. Please check the charger listing in the app for cable requirements."
+    },
+    {
+      "category": "Account & App",
+      "question": "I forgot my app password, how do I reset it?",
+      "answer": "On the Aeversa app login screen, tap 'Forgot Password' and follow the instructions sent to your registered email address."
+    },
+    {
+      "category": "Account & App",
+      "question": "How do I update my payment details?",
+      "answer": "Go to 'Account Settings' in the Aeversa app, then 'Payment Methods', where you can add, remove, or update your card details."
+    },
+    {
+      "category": "Account & App",
+      "question": "How do I delete my account?",
+      "answer": "Please email support@aeversa.co.za with your account details and a request for account deletion, and our team will assist you."
+    },
+    {
+      "category": "Policies",
+      "question": "What is your refund policy?",
+      "answer": "If you experience a billing error or a failed charging session that was still charged, please email support@aeversa.co.za with your session details. Refunds are assessed on a case-by-case basis."
+    },
+    {
+      "category": "Policies",
+      "question": "What happens if I overstay at a charger after my session ends?",
+      "answer": "Some sites may apply an idle fee if a vehicle remains connected to a charger after the session has completed, to ensure chargers are available for other customers. Please check the specific site terms in the app."
+    },
+    {
+      "category": "Sales & New Business",
+      "question": "I want to install a charger at my business or property",
+      "answer": "SALES_REDIRECT"
+    },
+    {
+      "category": "Sales & New Business",
+      "question": "Do you offer fleet charging solutions?",
+      "answer": "SALES_REDIRECT"
+    },
+    {
+      "category": "Sales & New Business",
+      "question": "I'm interested in becoming a charging site host or partner",
+      "answer": "SALES_REDIRECT"
+    },
+    {
+      "category": "Sales & New Business",
+      "question": "What are your pricing plans for businesses?",
+      "answer": "SALES_REDIRECT"
+    }
+  ]
+}
