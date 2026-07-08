@@ -13,17 +13,12 @@
     {
       "category": "Starting a Charging Session",
       "question": "How do I start a charging session?",
-      "answer": "There are two ways to start a charging session depending on your charger setup:\n\nMethod 1 – Plug and Charge: Simply plug the charging cable into your vehicle and the session will start automatically.\n\nMethod 2 – VIN Start: Plug in the cable and wait for a red tick to appear on the charger screen. Once the red tick appears, tap on your vehicle's VIN on the screen to start the session."
+      "answer": "There are two ways to start a charging session depending on your charger setup:\n\nMethod 1 – Plug and Charge: Simply plug the charging cable into your vehicle and the session will start automatically.\n\nMethod 2 – VIN Start: Plug in the cable and wait for a red tick to appear on the charger screen. Once the red tick appears, tap the VIN icon on the charger screen to start the session."
     },
     {
       "category": "Starting a Charging Session",
       "question": "What is the red tick on the charger screen?",
-      "answer": "The red tick on the charger screen means the charger has detected your vehicle and is ready to start a session. Once you see the red tick, tap on your vehicle's VIN on the screen to begin charging."
-    },
-    {
-      "category": "Starting a Charging Session",
-      "question": "How do I find my vehicle's VIN on the charger screen?",
-      "answer": "After plugging in and seeing the red tick, your vehicle's VIN should appear as a selectable option on the charger screen. Tap on it to start the session. If your VIN does not appear, please contact support as your vehicle may not yet be registered on the system."
+      "answer": "The red tick on the charger screen means the charger has detected your vehicle and is ready to start a session. Once you see the red tick, tap the VIN icon on the screen to begin charging."
     },
     {
       "category": "Starting a Charging Session",
@@ -113,7 +108,7 @@
     {
       "category": "Fleet Management",
       "question": "A new vehicle has been added to our fleet, how do we register it on the system?",
-      "answer": "New vehicles need to be registered on the Aeversa system before they can charge using the VIN start method. Please email support@aeversa.co.za with the vehicle's VIN, make, and model and we will get it added for you."
+      "answer": "New vehicles need to be registered on the Aeversa system before they can charge using the VID start method. Please email support@aeversa.co.za with the vehicle's VID, make, and model and we will get it added for you."
     },
     {
       "category": "Fleet Management",
