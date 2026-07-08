@@ -25,6 +25,17 @@ def load_knowledge_base():
 KNOWLEDGE_BASE = load_knowledge_base()
 
 
+def extract_error_code(text: str) -> str | None:
+    """Extracts a numeric error code from text like '76', 'error 76', 'error code 76'."""
+    import re
+    # Strip common prefixes and extract the number
+    cleaned = text.strip().lower()
+    cleaned = re.sub(r"(error\s*code|error|code|err)\s*", "", cleaned).strip()
+    if re.fullmatch(r"\d+", cleaned):
+        return cleaned
+    return None
+
+
 def lookup_error_code(code: str) -> dict | None:
     """Looks up an error code in the knowledge base. Returns the error dict or None."""
     for error in KNOWLEDGE_BASE.get("error_codes", []):
@@ -264,11 +275,10 @@ def handle_message(user_id: str, msg_raw: str) -> str:
             return GREETING
 
         # ── Direct error code lookup ──────────────────────────────────────────
-        # Check if the customer typed a number that matches a known error code
-        import re
-        code_match = re.fullmatch(r"\d+", msg.strip())
-        if code_match:
-            error = lookup_error_code(msg.strip())
+        # Handles: "76", "error 76", "error code 76", "err 76"
+        extracted_code = extract_error_code(msg.strip())
+        if extracted_code:
+            error = lookup_error_code(extracted_code)
             if error:
                 user_states[user_id] = {"step": "start"}
                 return error_code_response(error)
@@ -413,8 +423,9 @@ def handle_message(user_id: str, msg_raw: str) -> str:
     if step == "opt1_error_detail":
         error_msg = msg_raw.strip()
         user_states[user_id] = {"step": "start"}
-        # Check if it matches a known error code
-        error = lookup_error_code(error_msg)
+        # Try to extract and match a known error code (handles "76", "error 76", "error code 76")
+        extracted = extract_error_code(error_msg)
+        error = lookup_error_code(extracted) if extracted else lookup_error_code(error_msg)
         if error:
             return error_code_response(error)
         # Unknown error code — log and escalate
