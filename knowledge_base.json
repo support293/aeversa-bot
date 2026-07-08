@@ -85,7 +85,7 @@
     {
       "code": "23",
       "meaning": "Cable not fully connected",
-      "customer_message": "Error 23 means the charger is detecting that the cable is not properly seated. Please unplug fully and reinsert the cable firmly into both the charger and your vehicle, making sure it clicks into place.",
+      "customer_message": "Error 23 means the charger is detecting that the cable is not properly seated. Please unplug fully and reinsert the charging cable firmly into the vehicle, making sure it clicks into place.",
       "self_service": true
     },
     {
@@ -222,12 +222,12 @@
     {
       "category": "Starting a Charging Session",
       "question": "The red tick is not appearing on the screen, what should I do?",
-      "answer": "If the red tick does not appear after plugging in, try the following: Make sure the cable is firmly plugged into both the charger and your vehicle. Ensure your vehicle is switched off and the key is removed from the ignition. Wait up to 60 seconds as some vehicles take time to communicate with the charger. If the red tick still does not appear, please select option 1 from the AE support menu for further assistance."
+      "answer": "If the red tick does not appear after plugging in, try the following: Make sure the charging cable is firmly plugged into the vehicle. Ensure your vehicle is switched off and the key is removed from the ignition. Wait up to 60 seconds as some vehicles take time to communicate with the charger. If the red tick still does not appear, please select option 1 from the AE support menu for further assistance."
     },
     {
       "category": "Starting a Charging Session",
       "question": "My vehicle is registered for plug and charge but the session is not starting automatically",
-      "answer": "First make sure the cable is firmly plugged into both the charger and your vehicle, and that your vehicle is switched off with the key removed. Some vehicles take up to 60 seconds to initiate plug and charge automatically. If the session still does not start, try the VIN start method as an alternative — plug in, wait for the red tick, and tap your VIN. If neither method works, please select option 1 from the AE support menu."
+      "answer": "First make sure the charging cable is firmly plugged into the vehicle, and that your vehicle is switched off with the key removed. Some vehicles take up to 60 seconds to initiate plug and charge automatically. If the session still does not start, try the VIN start method as an alternative — plug in, wait for the red tick, and tap your VIN. If neither method works, please select option 1 from the AE support menu."
     },
     {
       "category": "Stopping a Charging Session",
