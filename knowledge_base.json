@@ -9,16 +9,215 @@
       "phone": "0849006267"
     }
   },
+  "error_codes": [
+    {
+      "code": "0",
+      "meaning": "No error detected",
+      "customer_message": "Error 0 means no fault was detected on the charger. Please try unplugging and plugging in your vehicle again to start a new session.",
+      "self_service": true
+    },
+    {
+      "code": "1",
+      "meaning": "Charger stopped the session",
+      "customer_message": "Error 1 means the charger ended the session unexpectedly. Please unplug, wait 30 seconds, and try starting a new charging session. If it happens again, please contact support.",
+      "self_service": true
+    },
+    {
+      "code": "2",
+      "meaning": "Vehicle requested to stop charging",
+      "customer_message": "Error 2 means your vehicle sent a signal to stop the charging session. This can happen if your vehicle's battery management system detected an issue. Please try unplugging and starting a new session. If the error repeats, please contact support.",
+      "self_service": true
+    },
+    {
+      "code": "10",
+      "meaning": "Cable lock failed",
+      "customer_message": "Error 10 means the charger could not lock the cable connector properly. Please unplug the cable fully and reinsert it firmly. If the error appears again, please contact support as the connector may need inspection.",
+      "self_service": true
+    },
+    {
+      "code": "11",
+      "meaning": "Charger overheated and stopped",
+      "customer_message": "Error 11 means the charger stopped because it got too hot. Please leave the charger to rest for at least 15 minutes to allow it to cool down, then try again. If this error keeps occurring, please contact support as the cooling system may need to be checked.",
+      "self_service": true
+    },
+    {
+      "code": "12",
+      "meaning": "Communication timeout during startup",
+      "customer_message": "Error 12 means the charger and your vehicle could not complete their startup handshake in time. Please unplug, make sure your vehicle is switched off and key is removed, wait 30 seconds, and try again. If it persists, please contact support.",
+      "self_service": true
+    },
+    {
+      "code": "13",
+      "meaning": "Battery parameter setup timeout",
+      "customer_message": "Error 13 means there was a timeout while the charger was reading your vehicle's battery settings. Please unplug, wait 30 seconds, and try again. If the error repeats, please contact support.",
+      "self_service": true
+    },
+    {
+      "code": "14",
+      "meaning": "Vehicle not ready to charge timeout",
+      "customer_message": "Error 14 means your vehicle did not signal that it was ready to charge in time. Please unplug, ensure the vehicle is switched off with the key removed, wait 30 seconds, and try again. Contact support if the issue continues.",
+      "self_service": true
+    },
+    {
+      "code": "15",
+      "meaning": "Charging session communication timeout",
+      "customer_message": "Error 15 means the communication between the charger and your vehicle was interrupted during the charging session. Please unplug, wait 30 seconds, and start a new session. Contact support if it keeps happening.",
+      "self_service": true
+    },
+    {
+      "code": "16",
+      "meaning": "Vehicle charge request timeout",
+      "customer_message": "Error 16 means your vehicle stopped sending charge requests to the charger during the session. Please unplug, wait 30 seconds, and try again. If this error repeats, please contact support.",
+      "self_service": true
+    },
+    {
+      "code": "17",
+      "meaning": "Vehicle sent a stop signal during charging",
+      "customer_message": "Error 17 means your vehicle's battery management system sent a stop signal during the session. Please unplug, wait 30 seconds, and try again. If the error continues, please contact support.",
+      "self_service": true
+    },
+    {
+      "code": "19",
+      "meaning": "Internal relay fault",
+      "customer_message": "Error 19 indicates an internal hardware fault on the charger. Please do not attempt to restart it yourself. Our support team will need to reboot the charger remotely. Please contact support immediately with your Charger ID.",
+      "self_service": false
+    },
+    {
+      "code": "23",
+      "meaning": "Cable not fully connected",
+      "customer_message": "Error 23 means the charger is detecting that the cable is not properly seated. Please unplug fully and reinsert the cable firmly into both the charger and your vehicle, making sure it clicks into place.",
+      "self_service": true
+    },
+    {
+      "code": "26",
+      "meaning": "Session start command timeout",
+      "customer_message": "Error 26 means the charger did not receive a start confirmation in time. Please unplug, wait 30 seconds, and try starting a new session. If it fails again, please contact support.",
+      "self_service": true
+    },
+    {
+      "code": "31",
+      "meaning": "Charger has no output or insufficient power output",
+      "customer_message": "Error 31 means the charger is unable to deliver power. This may indicate a hardware issue with the unit. Please contact support with your Charger ID so we can investigate.",
+      "self_service": false
+    },
+    {
+      "code": "64",
+      "meaning": "Vehicle battery parameters not compatible",
+      "customer_message": "Error 64 means the charger detected a mismatch with your vehicle's battery settings. Please contact support with your vehicle VIN and Charger ID so we can investigate the compatibility.",
+      "self_service": false
+    },
+    {
+      "code": "74",
+      "meaning": "Charger side door is open",
+      "customer_message": "Error 74 means the charger's side panel door is not properly closed. Please check that both side doors of the charging unit are securely shut, then try again.",
+      "self_service": true
+    },
+    {
+      "code": "76",
+      "meaning": "Insulation fault detected",
+      "customer_message": "Error 76 means the charger detected an insulation issue. Please unplug and try again. If the error appears a second time, please stop using this charger and contact support immediately with your Charger ID as this may be a safety-related fault.",
+      "self_service": true
+    },
+    {
+      "code": "84",
+      "meaning": "Vehicle detected connected before session started",
+      "customer_message": "Error 84 means the charger detected your vehicle was already connected when it started up. Please fully unplug the cable, wait 30 seconds, then plug it back in to start a fresh session.",
+      "self_service": true
+    },
+    {
+      "code": "85",
+      "meaning": "Overcurrent or overvoltage detected",
+      "customer_message": "Error 85 means the charger detected an abnormal current or voltage level. Please stop using this charger immediately and contact support with your Charger ID. Do not attempt to restart until our team has investigated.",
+      "self_service": false
+    },
+    {
+      "code": "86",
+      "meaning": "Low voltage detected",
+      "customer_message": "Error 86 means the charger detected a lower than expected voltage. Please contact support with your Charger ID so our team can investigate the power supply to this unit.",
+      "self_service": false
+    },
+    {
+      "code": "150",
+      "meaning": "Vehicle reported a battery management fault",
+      "customer_message": "Error 150 means your vehicle's battery management system reported a fault to the charger. Please unplug and check your vehicle's dashboard for any warning lights. If your vehicle appears fine, try again. If the error repeats, please contact support with your vehicle VIN.",
+      "self_service": true
+    },
+    {
+      "code": "151",
+      "meaning": "Initial handshake timeout",
+      "customer_message": "Error 151 means the charger and your vehicle could not complete the initial connection check in time. Please unplug, make sure your vehicle is switched off with the key removed, wait 30 seconds, and try again.",
+      "self_service": true
+    },
+    {
+      "code": "152",
+      "meaning": "Vehicle handshake response timeout",
+      "customer_message": "Error 152 means your vehicle did not respond to the charger's connection check in time. Please unplug, wait 30 seconds, and try again. If the error continues, please contact support.",
+      "self_service": true
+    },
+    {
+      "code": "153",
+      "meaning": "Vehicle not ready — relay not closed",
+      "customer_message": "Error 153 means your vehicle's internal charging relay did not close as expected. Please unplug, make sure your vehicle is switched off with the key fully removed, wait 30 seconds, and try again.",
+      "self_service": true
+    },
+    {
+      "code": "154",
+      "meaning": "Vehicle charge request lost during session",
+      "customer_message": "Error 154 means your vehicle stopped sending charge requests during an active session. Please unplug, wait 30 seconds, and start a new session. Contact support if this keeps happening.",
+      "self_service": true
+    },
+    {
+      "code": "155",
+      "meaning": "Vehicle charging status lost during session",
+      "customer_message": "Error 155 means the charger lost track of your vehicle's battery status during the session. Please unplug, wait 30 seconds, and try again. Contact support if the issue continues.",
+      "self_service": true
+    },
+    {
+      "code": "156",
+      "meaning": "Lost communication with vehicle battery management system",
+      "customer_message": "Error 156 means the charger lost communication with your vehicle's battery management system. Please unplug, make sure your vehicle is completely switched off and the key is removed, wait 60 seconds, and try again. If the error appears again, please contact support with your Charger ID and vehicle VIN.",
+      "self_service": true
+    },
+    {
+      "code": "157",
+      "meaning": "Vehicle fault detected",
+      "customer_message": "Error 157 means your vehicle reported a fault to the charger. Please check your vehicle's dashboard for any warning lights or error messages. If your vehicle appears to have a fault, please contact your fleet manager or vehicle service team. If the vehicle seems fine, please contact our support team with your vehicle VIN.",
+      "self_service": false
+    },
+    {
+      "code": "158",
+      "meaning": "Vehicle battery voltage mismatch",
+      "customer_message": "Error 158 means there is a discrepancy between the voltage your vehicle reported and what the charger measured. Please contact support with your Charger ID and vehicle VIN so our team can investigate.",
+      "self_service": false
+    },
+    {
+      "code": "159",
+      "meaning": "Charger hardware fault",
+      "customer_message": "Error 159 indicates a fault with the charging unit itself. Please contact support immediately with your Charger ID. Do not attempt to use this charger until our team has inspected it.",
+      "self_service": false
+    },
+    {
+      "code": "2048",
+      "meaning": "Internal communication failure between charger components",
+      "customer_message": "Error 2048 means the internal components of the charger lost communication with each other. Please contact support with your Charger ID. Our team will need to remotely restart the unit. If after restarting the charger you do not hear the sound of the self-inspection (three click sounds from the unit), please let support know immediately.",
+      "self_service": false
+    }
+  ],
   "faqs": [
     {
       "category": "Starting a Charging Session",
       "question": "How do I start a charging session?",
-      "answer": "There are two ways to start a charging session depending on your charger setup:\n\nMethod 1 – Plug and Charge: Simply plug the charging cable into your vehicle and the session will start automatically.\n\nMethod 2 – VIN Start: Plug in the cable and wait for a red tick to appear on the charger screen. Once the red tick appears, tap the VIN icon on the charger screen to start the session."
+      "answer": "There are two ways to start a charging session depending on your charger setup:\n\nMethod 1 – Plug and Charge: Simply plug the charging cable into your vehicle and the session will start automatically.\n\nMethod 2 – VIN Start: Plug in the cable and wait for a red tick to appear on the charger screen. Once the red tick appears, tap on your vehicle's VIN on the screen to start the session."
     },
     {
       "category": "Starting a Charging Session",
       "question": "What is the red tick on the charger screen?",
-      "answer": "The red tick on the charger screen means the charger has detected your vehicle and is ready to start a session. Once you see the red tick, tap the VIN icon on the screen to begin charging."
+      "answer": "The red tick on the charger screen means the charger has detected your vehicle and is ready to start a session. Once you see the red tick, tap on your vehicle's VIN on the screen to begin charging."
+    },
+    {
+      "category": "Starting a Charging Session",
+      "question": "How do I find my vehicle's VIN on the charger screen?",
+      "answer": "After plugging in and seeing the red tick, your vehicle's VIN should appear as a selectable option on the charger screen. Tap on it to start the session. If your VIN does not appear, please contact support as your vehicle may not yet be registered on the system."
     },
     {
       "category": "Starting a Charging Session",
@@ -87,13 +286,13 @@
     },
     {
       "category": "Charger & Site",
-      "question": "There is an error message on the charger screen, what does it mean?",
-      "answer": "Error messages on the charger screen usually indicate a communication or hardware fault. Please take note of or photograph the exact error message and contact support via option 1 or option 2 on the AE menu, or email support@aeversa.co.za. Having the Charger ID and error message ready will help us resolve this quickly."
+      "question": "The cable is stuck and I cannot unplug it, what should I do?",
+      "answer": "Do not force the cable out. First make sure the charging session has been fully stopped on the charger screen by tapping twice then pressing Stop. Some vehicles lock the cable during an active session. If the session is stopped and the cable is still stuck, please contact support immediately and do not attempt to force the connector out as this may damage your vehicle or the charger."
     },
     {
       "category": "Charger & Site",
-      "question": "The cable is stuck and I cannot unplug it, what should I do?",
-      "answer": "Do not force the cable out. First make sure the charging session has been fully stopped on the charger screen. Some vehicles lock the cable during an active session. If the session is stopped and the cable is still stuck, please contact support immediately and do not attempt to force the connector out as this may damage your vehicle or the charger."
+      "question": "There is an error message on the charger screen, what does it mean?",
+      "answer": "Please type the error code number you see on the screen and I will explain what it means and what to do next."
     },
     {
       "category": "Fleet Management",
@@ -108,7 +307,7 @@
     {
       "category": "Fleet Management",
       "question": "A new vehicle has been added to our fleet, how do we register it on the system?",
-      "answer": "New vehicles need to be registered on the Aeversa system before they can charge using the VID start method. Please email support@aeversa.co.za with the vehicle's VID, make, and model and we will get it added for you."
+      "answer": "New vehicles need to be registered on the Aeversa system before they can charge using the VIN start method. Please email support@aeversa.co.za with the vehicle's VIN, make, and model and we will get it added for you."
     },
     {
       "category": "Fleet Management",
