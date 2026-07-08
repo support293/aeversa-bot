@@ -25,6 +25,32 @@ def load_knowledge_base():
 KNOWLEDGE_BASE = load_knowledge_base()
 
 
+def lookup_error_code(code: str) -> dict | None:
+    """Looks up an error code in the knowledge base. Returns the error dict or None."""
+    for error in KNOWLEDGE_BASE.get("error_codes", []):
+        if str(error.get("code", "")) == str(code).strip():
+            return error
+    return None
+
+
+def error_code_response(error: dict) -> str:
+    """Formats a customer-friendly error code response."""
+    code = error.get("code", "")
+    message = error.get("customer_message", "")
+    self_service = error.get("self_service", False)
+
+    response = f"🔴 *Error Code {code}*\n\n{message}"
+
+    if not self_service:
+        response += f"\n\n{AGENT_INTRO}"
+    else:
+        response += (
+            "\n\nIf you have tried the steps above and the issue persists, "
+            "type *AGENT* to speak to a support agent or type *MENU* to start again."
+        )
+    return response
+
+
 def build_kb_text(kb: dict) -> str:
     """Formats the knowledge base into plain text for Claude's system prompt."""
     lines = []
@@ -237,6 +263,16 @@ def handle_message(user_id: str, msg_raw: str) -> str:
             user_states[user_id] = {"step": "start"}
             return GREETING
 
+        # ── Direct error code lookup ──────────────────────────────────────────
+        # Check if the customer typed a number that matches a known error code
+        import re
+        code_match = re.fullmatch(r"\d+", msg.strip())
+        if code_match:
+            error = lookup_error_code(msg.strip())
+            if error:
+                user_states[user_id] = {"step": "start"}
+                return error_code_response(error)
+
         # ── Free text — ask Claude to understand intent ─────────────────────
         ai_result = ask_claude(msg_raw)
 
@@ -377,6 +413,11 @@ def handle_message(user_id: str, msg_raw: str) -> str:
     if step == "opt1_error_detail":
         error_msg = msg_raw.strip()
         user_states[user_id] = {"step": "start"}
+        # Check if it matches a known error code
+        error = lookup_error_code(error_msg)
+        if error:
+            return error_code_response(error)
+        # Unknown error code — log and escalate
         return (
             f"Thank you for that information. I have logged the error: *\"{error_msg}\"*\n\n"
             f"{AGENT_INTRO}"
