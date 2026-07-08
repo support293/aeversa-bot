@@ -11,133 +11,128 @@
   },
   "faqs": [
     {
-      "category": "Getting Started",
+      "category": "Starting a Charging Session",
       "question": "How do I start a charging session?",
-      "answer": "Open the Aeversa app, select the charger you are connected to, and tap 'Start Charging'. Make sure your cable is firmly plugged into both your vehicle and the charger before starting."
+      "answer": "There are two ways to start a charging session depending on your charger setup:\n\nMethod 1 – Plug and Charge: Simply plug the charging cable into your vehicle and the session will start automatically.\n\nMethod 2 – VIN Start: Plug in the cable and wait for a red tick to appear on the charger screen. Once the red tick appears, tap on your vehicle's VIN on the screen to start the session."
     },
     {
-      "category": "Getting Started",
+      "category": "Starting a Charging Session",
+      "question": "What is the red tick on the charger screen?",
+      "answer": "The red tick on the charger screen means the charger has detected your vehicle and is ready to start a session. Once you see the red tick, tap on your vehicle's VIN on the screen to begin charging."
+    },
+    {
+      "category": "Starting a Charging Session",
+      "question": "How do I find my vehicle's VIN on the charger screen?",
+      "answer": "After plugging in and seeing the red tick, your vehicle's VIN should appear as a selectable option on the charger screen. Tap on it to start the session. If your VIN does not appear, please contact support as your vehicle may not yet be registered on the system."
+    },
+    {
+      "category": "Starting a Charging Session",
+      "question": "The red tick is not appearing on the screen, what should I do?",
+      "answer": "If the red tick does not appear after plugging in, try the following: Make sure the cable is firmly plugged into both the charger and your vehicle. Ensure your vehicle is switched off and the key is removed from the ignition. Wait up to 60 seconds as some vehicles take time to communicate with the charger. If the red tick still does not appear, please select option 1 from the AE support menu for further assistance."
+    },
+    {
+      "category": "Starting a Charging Session",
+      "question": "My vehicle is registered for plug and charge but the session is not starting automatically",
+      "answer": "First make sure the cable is firmly plugged into both the charger and your vehicle, and that your vehicle is switched off with the key removed. Some vehicles take up to 60 seconds to initiate plug and charge automatically. If the session still does not start, try the VIN start method as an alternative — plug in, wait for the red tick, and tap your VIN. If neither method works, please select option 1 from the AE support menu."
+    },
+    {
+      "category": "Stopping a Charging Session",
       "question": "How do I stop a charging session?",
-      "answer": "Open the Aeversa app, go to your active session, and tap 'Stop Charging'. You can also stop a session directly on the charger screen if it has that option."
+      "answer": "To stop a charging session, tap the charger screen twice to wake it up, then tap the Stop button that appears on the screen. Once the session has stopped, you can safely unplug the cable from your vehicle."
     },
     {
-      "category": "Getting Started",
-      "question": "Do I need an account to use a charger?",
-      "answer": "Yes, you need to register and create an account on the Aeversa app before you can start charging. This allows us to bill you correctly and keep a record of your charging history."
+      "category": "Stopping a Charging Session",
+      "question": "Can I just unplug the cable to stop charging?",
+      "answer": "It is recommended to always stop the session on the charger screen before unplugging. Tap the screen twice to wake it, then tap the Stop button, then unplug. Unplugging without stopping the session first may cause errors on the charger."
     },
     {
-      "category": "Payment & Billing",
-      "question": "How does billing work?",
-      "answer": "You are billed per kWh (kilowatt-hour) of energy consumed during your charging session. Charges are processed automatically through the Aeversa app using your saved payment method."
+      "category": "Stopping a Charging Session",
+      "question": "The stop button is not responding on the screen, what do I do?",
+      "answer": "Try tapping the screen twice again to wake it up, then look for the Stop button. If the screen is unresponsive, please contact support and we will stop the session remotely. Do not forcefully unplug the cable. Please have your Charger ID ready when you contact us."
     },
     {
-      "category": "Payment & Billing",
-      "question": "What payment methods are accepted?",
-      "answer": "The Aeversa app accepts major debit and credit cards. Payment is linked to your account and charged automatically after each session."
+      "category": "Stopping a Charging Session",
+      "question": "The session is still showing as active after I stopped it, is that normal?",
+      "answer": "It can take up to 2 minutes for the charger to fully close the session after you press stop. If the session still shows as active after 5 minutes, please contact support with your Charger ID and vehicle VIN so we can investigate."
     },
     {
-      "category": "Payment & Billing",
-      "question": "Why was I charged for a session I didn't complete?",
-      "answer": "You are only billed for the energy actually delivered to your vehicle. If you believe there is a billing error, please email support@aeversa.co.za with your session details and we will investigate."
+      "category": "Charging Speed & Performance",
+      "question": "How long should it take to charge my vehicle?",
+      "answer": "Charge time depends on your vehicle's battery capacity, current state of charge, and the type of charger at your site. Your fleet manager or Aeversa account team can advise on the expected charge times for your specific vehicle models and charger configuration."
     },
     {
-      "category": "Payment & Billing",
-      "question": "Can I get a receipt or invoice for my charging session?",
-      "answer": "Yes, all session receipts are available in the 'History' section of the Aeversa app. You can also request a formal invoice by emailing support@aeversa.co.za."
+      "category": "Charging Speed & Performance",
+      "question": "My vehicle is charging slower than usual, what could cause this?",
+      "answer": "Several factors can affect charging speed: extreme heat or cold can cause the vehicle's battery management system to reduce charging speed automatically; if the battery is already close to full, charging naturally slows down; peak load periods at the depot may affect available power. If the speed seems unusually low, please select option 3 from the AE support menu."
     },
     {
-      "category": "Charger Types",
-      "question": "What is the difference between AC and DC charging?",
-      "answer": "AC (Alternating Current) chargers are slower, typically 7-22kW, and are ideal for longer parking durations like at the office or home. DC (Direct Current) chargers are fast chargers, typically 50kW and above, designed for quick top-ups on the road."
+      "category": "Charging Speed & Performance",
+      "question": "Can multiple vehicles charge at the same time?",
+      "answer": "Yes, multiple vehicles can charge simultaneously at your depot, subject to the number of available charge points and your site's power capacity. Your Aeversa account team will have configured your site to manage load accordingly."
     },
     {
-      "category": "Charger Types",
-      "question": "How do I know which charger type is at a site?",
-      "answer": "The charger type and maximum output (kW) is displayed on the unit itself and also shown in the Aeversa app when you select that charger location."
+      "category": "Charging Speed & Performance",
+      "question": "What does kWh mean and why does it matter for our fleet?",
+      "answer": "kWh stands for kilowatt-hour and is the unit used to measure energy delivered to your vehicle during a charging session. For fleet management, tracking kWh per vehicle helps monitor energy consumption, calculate charging costs, and identify vehicles that may have battery performance issues."
     },
     {
-      "category": "Charger Types",
-      "question": "What connector types do Aeversa chargers use?",
-      "answer": "Our chargers support standard connector types used in South Africa, including Type 2 for AC charging and CCS2 for DC fast charging. Please check your vehicle's compatible connector type before charging."
+      "category": "Charger & Site",
+      "question": "How do I know which charger to use at my depot?",
+      "answer": "Each charger at your depot has a unique Charger ID displayed on a sticker on the unit. Your fleet manager will advise on the correct charger allocation per vehicle. When contacting support, always have the Charger ID ready as it helps us identify and resolve issues faster."
     },
     {
-      "category": "Finding Chargers",
-      "question": "How do I find the nearest Aeversa charger?",
-      "answer": "Open the Aeversa app and tap the map icon to see all nearby charging locations, their availability, and charger types in real time."
+      "category": "Charger & Site",
+      "question": "Where do I find the Charger ID?",
+      "answer": "The Charger ID is printed on a sticker on the front or side of the charger unit. It is typically a combination of letters and numbers. Please have this ready whenever you contact support as it helps us locate and diagnose your specific charger quickly."
     },
     {
-      "category": "Finding Chargers",
-      "question": "Can I reserve a charger in advance?",
-      "answer": "Charger reservation availability depends on the specific site. Please check the Aeversa app for reservation options at your preferred location."
-    },
-    {
-      "category": "Technical Issues",
-      "question": "My vehicle is not charging, what should I do?",
-      "answer": "Please select option 1 from the AE support menu and I'll guide you through a quick troubleshooting process to get you charging again."
-    },
-    {
-      "category": "Technical Issues",
+      "category": "Charger & Site",
       "question": "The charger screen is blank or off, what should I do?",
-      "answer": "Please select option 2 from the AE support menu and I'll help you check if this is a site power issue or a charger fault."
+      "answer": "Please select option 2 from the AE support menu and AE will guide you through checking whether this is a power issue at the site or a fault with the specific unit."
     },
     {
-      "category": "Technical Issues",
-      "question": "My charging speed seems slower than expected, what should I do?",
-      "answer": "Please select option 3 from the AE support menu and I'll walk you through some quick checks to identify the cause."
+      "category": "Charger & Site",
+      "question": "There is an error message on the charger screen, what does it mean?",
+      "answer": "Error messages on the charger screen usually indicate a communication or hardware fault. Please take note of or photograph the exact error message and contact support via option 1 or option 2 on the AE menu, or email support@aeversa.co.za. Having the Charger ID and error message ready will help us resolve this quickly."
     },
     {
-      "category": "Technical Issues",
-      "question": "Why does my vehicle charge slower in cold or hot weather?",
-      "answer": "Extreme temperatures can cause your vehicle's battery management system to automatically reduce charging speed to protect the battery. This is normal vehicle behaviour and not a fault with the charger."
+      "category": "Charger & Site",
+      "question": "The cable is stuck and I cannot unplug it, what should I do?",
+      "answer": "Do not force the cable out. First make sure the charging session has been fully stopped on the charger screen. Some vehicles lock the cable during an active session. If the session is stopped and the cable is still stuck, please contact support immediately and do not attempt to force the connector out as this may damage your vehicle or the charger."
     },
     {
-      "category": "Technical Issues",
-      "question": "Can I use any charging cable, or do I need a specific one?",
-      "answer": "Most Aeversa AC chargers require you to bring your own Type 2 cable, while our DC fast chargers have a tethered cable built into the unit. Please check the charger listing in the app for cable requirements."
+      "category": "Fleet Management",
+      "question": "How do I report a vehicle that is consistently not charging properly?",
+      "answer": "Please contact support via the AE menu or email support@aeversa.co.za with the vehicle's VIN, the Charger ID it typically uses, and a description of the issue. Our team will investigate whether the fault is with the charger or the vehicle's charging port."
     },
     {
-      "category": "Account & App",
-      "question": "I forgot my app password, how do I reset it?",
-      "answer": "On the Aeversa app login screen, tap 'Forgot Password' and follow the instructions sent to your registered email address."
+      "category": "Fleet Management",
+      "question": "Can I get a report of charging sessions per vehicle?",
+      "answer": "Yes, charging session reports per vehicle are available through your Aeversa fleet management account. Please speak to your Aeversa account manager or email support@aeversa.co.za for assistance accessing your reports."
     },
     {
-      "category": "Account & App",
-      "question": "How do I update my payment details?",
-      "answer": "Go to 'Account Settings' in the Aeversa app, then 'Payment Methods', where you can add, remove, or update your card details."
+      "category": "Fleet Management",
+      "question": "A new vehicle has been added to our fleet, how do we register it on the system?",
+      "answer": "New vehicles need to be registered on the Aeversa system before they can charge using the VIN start method. Please email support@aeversa.co.za with the vehicle's VIN, make, and model and we will get it added for you."
     },
     {
-      "category": "Account & App",
-      "question": "How do I delete my account?",
-      "answer": "Please email support@aeversa.co.za with your account details and a request for account deletion, and our team will assist you."
+      "category": "Fleet Management",
+      "question": "A vehicle has been removed from our fleet, how do we deregister it?",
+      "answer": "Please email support@aeversa.co.za with the vehicle's VIN and confirm that it should be removed from your fleet account. We will deactivate it from the system promptly."
     },
     {
-      "category": "Policies",
-      "question": "What is your refund policy?",
-      "answer": "If you experience a billing error or a failed charging session that was still charged, please email support@aeversa.co.za with your session details. Refunds are assessed on a case-by-case basis."
+      "category": "Fleet Management",
+      "question": "Who do I contact for fleet account changes or new charger installations?",
+      "answer": "SALES_REDIRECT"
     },
     {
-      "category": "Policies",
-      "question": "What happens if I overstay at a charger after my session ends?",
-      "answer": "Some sites may apply an idle fee if a vehicle remains connected to a charger after the session has completed, to ensure chargers are available for other customers. Please check the specific site terms in the app."
-    },
-    {
-      "category": "Sales & New Business",
-      "question": "I want to install a charger at my business or property",
+      "category": "Fleet Management",
+      "question": "We want to expand our charging infrastructure or add more charge points",
       "answer": "SALES_REDIRECT"
     },
     {
       "category": "Sales & New Business",
-      "question": "Do you offer fleet charging solutions?",
-      "answer": "SALES_REDIRECT"
-    },
-    {
-      "category": "Sales & New Business",
-      "question": "I'm interested in becoming a charging site host or partner",
-      "answer": "SALES_REDIRECT"
-    },
-    {
-      "category": "Sales & New Business",
-      "question": "What are your pricing plans for businesses?",
+      "question": "We are interested in Aeversa's fleet charging solutions",
       "answer": "SALES_REDIRECT"
     }
   ]
