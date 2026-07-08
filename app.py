@@ -103,31 +103,44 @@ def sales_redirect_message() -> str:
 
 # ── Claude AI – Intent Classification & Knowledge-Grounded Q&A ───────────────
 
-AE_SYSTEM_PROMPT = f"""You are AE, the WhatsApp support assistant for Aeversa (PTY) Ltd, a South African EV charge point operator.
+AE_SYSTEM_PROMPT = f"""You are AE, the WhatsApp support assistant for Aeversa (PTY) Ltd, a South African EV fleet charge point operator.
 
 Your job is to read a customer's free-text WhatsApp message and decide what they need. You must respond with ONLY a JSON object (no other text, no markdown fences) in this exact format:
 
 {{"intent": "...", "reply": "..."}}
 
 Where "intent" is ONE of:
-- "not_charging" — if the customer's vehicle is not charging
-- "charger_off" — if the charger itself appears offline/off/dead/no screen
-- "slow_charging" — if charging is happening but slower than expected
-- "agent" — if the customer explicitly wants a human, or has a billing/account/complaint issue requiring escalation
-- "sales" — if the customer is asking about new charger installations, fleet solutions, becoming a site host/partner, business pricing, or any new business enquiry
-- "general" — if it's a general question you can answer directly using the FAQ knowledge base below
-- "greeting" — if it's just a greeting with no specific issue
-- "unclear" — if you genuinely cannot tell what they want
+- "not_charging" — ONLY use this if the vehicle is plugged in but the charging SESSION is not starting or the vehicle is not receiving charge. Do NOT use this for stuck cables, error messages, or how-to questions.
+- "charger_off" — if the charger screen is blank, off, or the unit appears to have no power
+- "slow_charging" — if a charging session IS active but the speed is slower than expected
+- "agent" — if the customer explicitly wants a human agent, or has an account/complaint issue that cannot be resolved with FAQ information
+- "sales" — if the customer is asking about new charger installations, fleet expansion, partnerships, or business pricing
+- "general" — use this for ANY question that can be answered using the FAQ knowledge base below, including: how to start a session, how to stop a session, stuck cables, error messages on screen, VIN start process, red tick questions, how to register a vehicle, session reports, and any other how-to or informational question
+- "greeting" — if it is purely a greeting with no specific issue mentioned
+- "unclear" — only if you genuinely cannot determine what the customer needs after careful reading
 
-If intent is "not_charging", "charger_off", "slow_charging", or "agent", set "reply" to a short one-sentence acknowledgment.
+IMPORTANT ROUTING RULES:
+- "Cable is stuck" or "cannot unplug" = "general" (answer from KB, NOT "not_charging")
+- "Error message on screen" = "general" (answer from KB, NOT "not_charging")
+- "How do I start charging" = "general" (answer from KB)
+- "How do I stop charging" = "general" (answer from KB)
+- "Red tick" questions = "general" (answer from KB)
+- "VIN" questions = "general" (answer from KB)
+- "Session not starting" or "vehicle won't charge" = "not_charging" (needs diagnostic flow)
+- "Charger screen is off/blank" = "charger_off" (needs diagnostic flow)
+- "Charging is slow" = "slow_charging" (needs diagnostic flow)
 
-If intent is "sales", set "reply" to "" (empty string) — this will be handled separately.
+If intent is "not_charging", "charger_off", or "slow_charging", set "reply" to a short one-sentence warm acknowledgment of their specific issue.
 
-If intent is "general", set "reply" to a helpful, friendly, concise answer (2-4 sentences max) using ONLY the FAQ knowledge base below. If the knowledge base does not contain the answer, do NOT make one up — instead set intent to "agent" and reply with an acknowledgment that you'll connect them to someone who can help.
+If intent is "agent", set "reply" to a short one-sentence acknowledgment.
+
+If intent is "sales", set "reply" to "" (empty string).
+
+If intent is "general", set "reply" to a helpful, friendly, concise answer (2-4 sentences max) using ONLY the FAQ knowledge base below. If the knowledge base does not contain the answer, do NOT make one up — set intent to "agent" instead and reply with a short acknowledgment that you will connect them to someone who can help.
 
 If intent is "greeting" or "unclear", set "reply" to "" (empty string).
 
-Be warm, concise, and use a friendly South African tone. Never invent technical specifications, pricing, or details not in the knowledge base below.
+Be warm, concise, and professional. Use a friendly South African tone. Never invent technical details not found in the knowledge base.
 
 ─────────────────────────────
 {KB_TEXT}
@@ -313,6 +326,14 @@ def handle_message(user_id: str, msg_raw: str) -> str:
                 "Reply *YES* or *NO*"
             )
         else:
+            # Customer typed something other than YES/NO — check with Claude
+            ai_result = ask_claude(msg_raw)
+            if ai_result and ai_result.get("intent") == "general":
+                user_states[user_id] = {"step": "start"}
+                return (
+                    f"{ai_result.get('reply', '')}\n\n"
+                    "Type *MENU* to go back to the main options."
+                )
             return "Please reply *YES* or *NO*. Is your vehicle now charging?"
 
     if step == "opt1_removed_key_try":
@@ -327,6 +348,13 @@ def handle_message(user_id: str, msg_raw: str) -> str:
                 "Reply *YES* or *NO*"
             )
         else:
+            ai_result = ask_claude(msg_raw)
+            if ai_result and ai_result.get("intent") == "general":
+                user_states[user_id] = {"step": "start"}
+                return (
+                    f"{ai_result.get('reply', '')}\n\n"
+                    "Type *MENU* to go back to the main options."
+                )
             return "Please reply *YES* or *NO*. Is your vehicle now charging?"
 
     if step == "opt1_error_check":
