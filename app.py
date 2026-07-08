@@ -334,7 +334,7 @@ def handle_message(user_id: str, msg_raw: str) -> str:
             user_states[user_id] = {"step": "opt1_replug_fixed"}
             return (
                 "✅ Good.\n\n"
-                "Please *unplug the charging cable* and plug it back in firmly on both ends.\n\n"
+                "Please *unplug the charging cable* and plug it back in firmly into the vehicle.\n\n"
                 "Has this fixed the issue? Is your vehicle now charging?\n\n"
                 "Reply *YES* or *NO*"
             )
@@ -532,21 +532,28 @@ def handle_message(user_id: str, msg_raw: str) -> str:
     # ══════════════════════════════════════════════════════════════════════════
 
     if step == "opt3_restart_session":
-        if msg in ["yes", "no"]:
+        if msg == "yes":
             user_states[user_id] = {"step": "opt3_still_slow"}
-            if msg == "yes":
-                return (
-                    "Great! Please stop the session and start it again.\n\n"
-                    "Is the charging speed *still slow* after restarting?\n\n"
-                    "Reply *YES* or *NO*"
-                )
-            else:
-                return (
-                    "No problem.\n\n"
-                    "Is the charging speed *still slow*?\n\n"
-                    "Reply *YES* or *NO*"
-                )
+            return (
+                "Great! Please stop the session and start it again.\n\n"
+                "Is the charging speed *still slow* after restarting?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "no":
+            user_states[user_id] = {"step": "opt3_still_slow"}
+            return (
+                "No problem.\n\n"
+                "Is the charging speed *still slow*?\n\n"
+                "Reply *YES* or *NO*"
+            )
         else:
+            # Check if customer is saying it's now working
+            positive_phrases = ["charging now", "its charging", "it's charging", "working now",
+                                 "it works", "its working", "it's working", "working", "sorted",
+                                 "fixed", "resolved", "charging fine", "all good", "good now"]
+            if any(phrase in msg for phrase in positive_phrases):
+                user_states[user_id] = {"step": "start"}
+                return GREAT_NEWS
             return "Please reply *YES* or *NO*. Can you stop the charging session and start it again?"
 
     if step == "opt3_still_slow":
@@ -561,6 +568,14 @@ def handle_message(user_id: str, msg_raw: str) -> str:
                 "Reply *1* for Wattspot or *2* for Other"
             )
         else:
+            # Check if customer is saying it's now working
+            positive_phrases = ["charging now", "its charging", "it's charging", "working now",
+                                 "it works", "its working", "it's working", "working", "sorted",
+                                 "fixed", "resolved", "charging fine", "all good", "good now",
+                                 "faster now", "speed is fine", "normal now"]
+            if any(phrase in msg for phrase in positive_phrases):
+                user_states[user_id] = {"step": "start"}
+                return GREAT_NEWS
             return "Please reply *YES* or *NO*. Is the charging speed still slow?"
 
     if step == "opt3_which_site":
