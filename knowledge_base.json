@@ -83,6 +83,12 @@
       "self_service": false
     },
     {
+      "code": "22",
+      "meaning": "Retired error code — no longer in use",
+      "customer_message": "Error 22 is a retired code that is no longer in use on current charger firmware. Please contact support with your Charger ID so our team can investigate what triggered this on your unit.",
+      "self_service": false
+    },
+    {
       "code": "23",
       "meaning": "Cable not fully connected",
       "customer_message": "Error 23 means the charger is detecting that the cable is not properly seated. Please unplug fully and reinsert the charging cable firmly into the vehicle, making sure it clicks into place.",
@@ -111,6 +117,12 @@
       "meaning": "Charger side door is open",
       "customer_message": "Error 74 means the charger's side panel door is not properly closed. Please check that both side doors of the charging unit are securely shut, then try again.",
       "self_service": true
+    },
+    {
+      "code": "75",
+      "meaning": "Retired error code — no longer in use",
+      "customer_message": "Error 75 is a retired code that is no longer in use on current charger firmware. Please contact support with your Charger ID so our team can investigate what triggered this on your unit.",
+      "self_service": false
     },
     {
       "code": "76",
