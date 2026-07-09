@@ -187,7 +187,7 @@ Be warm, concise, and professional. Use a friendly South African tone. Never inv
 
 def ask_claude(message_text: str):
     """Calls Claude to classify intent and optionally generate a reply.
-    Returns dict: {{"intent": str, "reply": str}} or None on failure."""
+    Returns dict: {"intent": str, "reply": str} or None on failure."""
     if not ANTHROPIC_API_KEY:
         return None
 
@@ -205,7 +205,7 @@ def ask_claude(message_text: str):
                 "system": AE_SYSTEM_PROMPT,
                 "messages": [{"role": "user", "content": message_text}],
             },
-            timeout=15,
+            timeout=10,  # Strict 10s — Twilio cancels the whole request at 15s
         )
         response.raise_for_status()
         data = response.json()
@@ -214,6 +214,9 @@ def ask_claude(message_text: str):
         parsed = json.loads(text)
         if "intent" in parsed:
             return parsed
+        return None
+    except requests.exceptions.Timeout:
+        print("Claude API timed out — falling back to menu")
         return None
     except Exception as e:
         print(f"Claude API error: {e}")
@@ -287,7 +290,16 @@ def handle_message(user_id: str, msg_raw: str) -> str:
         ai_result = ask_claude(msg_raw)
 
         if ai_result is None:
-            return GREETING
+            # Claude unavailable or timed out — show menu with helpful message
+            return (
+                "👋 Hi! I'm AE, the Aeversa support assistant.\n\n"
+                "Please select one of the options below and I'll get you sorted:\n\n"
+                "🔴 *1* – My vehicle is not charging\n"
+                "⚫ *2* – The charger is off\n"
+                "🐢 *3* – The charging speed is slow\n"
+                "👤 *4* – Speak to a support agent\n\n"
+                "Simply type the number of your issue."
+            )
 
         intent = ai_result.get("intent", "unclear")
         ai_reply = ai_result.get("reply", "")
