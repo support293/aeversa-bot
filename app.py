@@ -230,16 +230,20 @@ def handle_message(user_id: str, msg_raw: str) -> str:
     state = user_states.get(user_id, {"step": "start"})
     step = state.get("step", "start")
 
-    # ── Global Commands ───────────────────────────────────────────────────────
-    if msg in ["menu", "start"]:
+    # ── Global Commands — these work from ANY step ────────────────────────────
+    # Greetings always reset the conversation regardless of current state
+    if msg in ["menu", "start", "hi", "hello", "hey", "hiya", "howzit",
+               "good morning", "good afternoon", "good evening", "good day"]:
         user_states[user_id] = {"step": "start"}
         return GREETING
 
-    if msg in ["agent", "human", "person", "speak to someone"] and step == "start":
+    # Agent request works from any step
+    if msg in ["agent", "human", "person", "speak to someone", "4"]:
         user_states[user_id] = {"step": "start"}
         return AGENT_INTRO
 
-    if msg in ["sales", "sales rep", "sales agent"] and step == "start":
+    # Sales request works from any step
+    if msg in ["sales", "sales rep", "sales agent"]:
         user_states[user_id] = {"step": "start"}
         return sales_redirect_message()
 
@@ -272,10 +276,6 @@ def handle_message(user_id: str, msg_raw: str) -> str:
         elif msg == "4":
             user_states[user_id] = {"step": "start"}
             return AGENT_INTRO
-
-        if msg in ["hi", "hello", "hey", "hiya", "howzit", "good morning", "good afternoon", "good evening"]:
-            user_states[user_id] = {"step": "start"}
-            return GREETING
 
         # ── Direct error code lookup ──────────────────────────────────────────
         # Handles: "76", "error 76", "error code 76", "err 76"
