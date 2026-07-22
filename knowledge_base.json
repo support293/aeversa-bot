@@ -219,17 +219,17 @@
     {
       "category": "Starting a Charging Session",
       "question": "How do I start a charging session?",
-      "answer": "There are two ways to start a charging session depending on your charger setup:\n\nMethod 1 – Plug and Charge: Simply plug the charging cable into your vehicle and the session will start automatically.\n\nMethod 2 – VIN Start: Plug in the cable and wait for a red tick to appear on the charger screen. Once the red tick appears, tap on your vehicle's VIN on the screen to start the session."
+      "answer": "There are two ways to start a charging session depending on your charger setup:\n\nMethod 1 – Plug and Charge: Simply plug the charging cable into your vehicle and the session will start automatically.\n\nMethod 2 – VIN Start: Plug in the cable and wait for a red tick to appear on the charger screen. Once the red tick appears, tap *PnC or VIN* on the screen to start the session."
     },
     {
       "category": "Starting a Charging Session",
       "question": "What is the red tick on the charger screen?",
-      "answer": "The red tick on the charger screen means the charger has detected your vehicle and is ready to start a session. Once you see the red tick, tap on your vehicle's VIN on the screen to begin charging."
+      "answer": "The red tick on the charger screen means the charger has detected your vehicle and is ready to start a session. Once you see the red tick, tap *PnC or VIN* on the screen to begin charging."
     },
     {
       "category": "Starting a Charging Session",
-      "question": "How do I find my vehicle's VIN on the charger screen?",
-      "answer": "After plugging in and seeing the red tick, your vehicle's VIN should appear as a selectable option on the charger screen. Tap on it to start the session. If your VIN does not appear, please contact support as your vehicle may not yet be registered on the system."
+      "question": "How do I find PnC or VIN on the charger screen?",
+      "answer": "After plugging in and seeing the red tick, tap *PnC or VIN* on the charger screen to start the session. If neither option appears, please contact support as your vehicle may not yet be registered on the system."
     },
     {
       "category": "Starting a Charging Session",
@@ -239,7 +239,7 @@
     {
       "category": "Starting a Charging Session",
       "question": "My vehicle is registered for plug and charge but the session is not starting automatically",
-      "answer": "First make sure the charging cable is firmly plugged into the vehicle, and that your vehicle is switched off with the key removed. Some vehicles take up to 60 seconds to initiate plug and charge automatically. If the session still does not start, try the VIN start method as an alternative — plug in, wait for the red tick, and tap your VIN. If neither method works, please select option 1 from the AE support menu."
+      "answer": "First make sure the charging cable is firmly plugged into the vehicle, and that your vehicle is switched off with the key removed. Some vehicles take up to 60 seconds to initiate plug and charge automatically. If the session still does not start, try the VIN start method as an alternative — plug in, wait for the red tick, and tap *PnC or VIN* on the screen. If neither method works, please select option 1 from the AE support menu."
     },
     {
       "category": "Stopping a Charging Session",
