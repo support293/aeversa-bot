@@ -150,6 +150,7 @@ Where "intent" is ONE of:
 - "not_charging" — ONLY use this if the vehicle is plugged in but the charging SESSION is not starting or the vehicle is not receiving charge. Do NOT use this for stuck cables, error messages, or how-to questions.
 - "charger_off" — if the charger screen is blank, off, or the unit appears to have no power
 - "slow_charging" — if a charging session IS active but the speed is slower than expected
+- "charger_fault" — if the customer says the charger is not working, broken, faulty, has a problem, or is giving issues in a general sense without specifying vehicle not charging, screen off, or slow speed
 - "agent" — if the customer explicitly wants a human agent, or has an account/complaint issue that cannot be resolved with FAQ information
 - "sales" — if the customer is asking about new charger installations, fleet expansion, partnerships, or business pricing
 - "general" — use this for ANY question that can be answered using the FAQ knowledge base below, including: how to start a session, how to stop a session, stuck cables, error messages on screen, VIN start process, red tick questions, how to register a vehicle, session reports, and any other how-to or informational question
@@ -157,6 +158,7 @@ Where "intent" is ONE of:
 - "unclear" — only if you genuinely cannot determine what the customer needs after careful reading
 
 IMPORTANT ROUTING RULES:
+- "Charger is not working" / "charger is broken" / "charger has a problem" / "charger giving issues" = "charger_fault"
 - "Cable is stuck" or "cannot unplug" = "general" (answer from KB, NOT "not_charging")
 - "Error message on screen" = "general" (answer from KB, NOT "not_charging")
 - "How do I start charging" = "general" (answer from KB)
@@ -327,6 +329,14 @@ def handle_message(user_id: str, msg_raw: str) -> str:
                 f"{prefix}🐢 *Slow Charging*\n\n"
                 "Can you stop the charging session and start it again?\n\n"
                 "Reply *YES* or *NO*"
+            )
+        elif intent == "charger_fault":
+            user_states[user_id] = {"step": "charger_fault_site"}
+            prefix = f"{ai_reply}\n\n" if ai_reply else ""
+            return (
+                f"{prefix}⚠️ *Charger Fault Reported*\n\n"
+                "I'm sorry to hear that. Let me gather some information so our support team can assist you.\n\n"
+                "Which *site* are you calling from? Please type the site name."
             )
         elif intent == "agent":
             user_states[user_id] = {"step": "start"}
@@ -724,6 +734,47 @@ def handle_message(user_id: str, msg_raw: str) -> str:
             )
         else:
             return "Please reply *YES* or *NO*. Is the charging speed still slow after restarting?"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # CHARGER FAULT — gather site and charger ID then escalate
+    # ══════════════════════════════════════════════════════════════════════════
+
+    if step == "charger_fault_site":
+        site = msg_raw.strip()
+        site_lower = site.lower()
+        user_states[user_id] = {"step": "charger_fault_id", "site": site}
+
+        # Give location-specific Charger ID instructions
+        known_sites = ["northgate", "fourways", "wynberg"]
+        if any(s in site_lower for s in known_sites):
+            charger_id_hint = (
+                "📍 For *{site}*, the Charger ID is located on the *right hand side "
+                "at the bottom of the charger unit.*"
+            ).format(site=site)
+        else:
+            charger_id_hint = (
+                "📍 The Charger ID (serial number) is located either on the "
+                "*back of the charger* or on the *left hand side*, both more towards the top of the unit."
+            )
+
+        return (
+            f"Thank you — noted that you are at *{site}*.\n\n"
+            f"Which *charger* are you having issues with?\n\n"
+            f"{charger_id_hint}\n\n"
+            f"Please type the *Charger ID* once you have it."
+        )
+
+    if step == "charger_fault_id":
+        charger_id = msg_raw.strip()
+        site = state.get("site", "Unknown site")
+        user_states[user_id] = {"step": "start"}
+        return (
+            f"Thank you. I have logged the following fault:\n\n"
+            f"📍 *Site:* {site}\n"
+            f"🔌 *Charger ID:* {charger_id}\n\n"
+            f"Our support team will investigate immediately.\n\n"
+            f"{AGENT_INTRO}"
+        )
 
     # ── Default Fallback ──────────────────────────────────────────────────────
     return FALLBACK
