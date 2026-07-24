@@ -746,7 +746,6 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> str:
             return (
                 "📍 *Wattspot Site*\n\n"
                 "Please check the *WiFi symbol at the top of the charger.*\n\n"
-                "📸 Please send a photo of the charger screen.\n\n"
                 "Is the WiFi symbol *White* or *Red*?\n\n"
                 "Reply *WHITE* or *RED*"
             )
@@ -770,7 +769,6 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> str:
     if step == "opt3_wattspot_wifi":
         if has_media and not msg:
             return (
-                "📸 *Thank you, we have received your photo!*\n\n"
                 "Is the WiFi symbol at the top of the charger *White* or *Red*?\n\n"
                 "Reply *WHITE* or *RED*"
             )
