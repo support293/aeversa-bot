@@ -775,55 +775,37 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> str:
                 "Reply *WHITE* or *RED*"
             )
         if msg == "white":
-            user_states[user_id] = {"step": "start"}
+            user_states[user_id] = {**state, "step": "opt3_wattspot_replug"}
             return (
                 "✅ The charger is *online* (WiFi is white).\n\n"
-                "Thank you for the photo. We are escalating this to our technical team.\n\n"
-                f"{AGENT_INTRO}"
+                "Please *unplug the charging cable* from the vehicle, "
+                "wait 30 seconds, and plug it back in firmly.\n\n"
+                "Is your vehicle now charging?\n\n"
+                "Reply *YES* or *NO*"
             )
         elif msg == "red":
-            user_states[user_id] = {**state, "step": "opt3_wattspot_after_wait"}
+            user_states[user_id] = {**state, "step": "start"}
             return (
-                "🔴 The charger appears to be *offline* (WiFi is red).\n\n"
-                "Please *wait 5 minutes* and check the WiFi symbol again.\n\n"
-                "After 5 minutes, is the WiFi symbol now *White* or still *Red*?\n\n"
-                "Reply *WHITE* or *RED*"
+                "🔴 The charger is *offline* (WiFi is red).\n\n"
+                "Our support team will investigate this unit immediately.\n\n"
+                f"{AGENT_INTRO}"
             )
         else:
             return "Please reply *WHITE* or *RED*. What colour is the WiFi symbol on the charger?"
 
-    if step == "opt3_wattspot_after_wait":
-        if msg == "red":
-            user_states[user_id] = {"step": "start"}
-            return (
-                "🔴 The charger is still offline.\n\n"
-                "Please *contact us again* once the WiFi signal changes to white, "
-                "or our team will investigate the unit.\n\n"
-                f"{AGENT_INTRO}"
-            )
-        elif msg == "white":
-            user_states[user_id] = {**state, "step": "opt3_wattspot_final_restart"}
-            return (
-                "✅ Great, the charger is back online!\n\n"
-                "Please *stop the charging session and start it again.*\n\n"
-                "Is the charging speed still slow?\n\n"
-                "Reply *YES* or *NO*"
-            )
-        else:
-            return "Please reply *WHITE* or *RED*. What colour is the WiFi symbol now?"
-
-    if step == "opt3_wattspot_final_restart":
-        if msg == "no":
-            user_states[user_id] = {"step": "start"}
+    if step == "opt3_wattspot_replug":
+        if msg == "yes":
+            user_states[user_id] = {**state, "step": "start"}
             return GREAT_NEWS
-        elif msg == "yes":
-            user_states[user_id] = {"step": "start"}
+        elif msg == "no":
+            user_states[user_id] = {**state, "step": "start"}
             return (
-                "We are sorry the issue persists. 😔\n\n"
+                "I'm sorry the issue persists. 😔\n\n"
+                "Our support team will investigate further.\n\n"
                 f"{AGENT_INTRO}"
             )
         else:
-            return "Please reply *YES* or *NO*. Is the charging speed still slow?"
+            return "Please reply *YES* or *NO*. Is your vehicle now charging?"
 
     # ── Other Site Flow ───────────────────────────────────────────────────────
 
