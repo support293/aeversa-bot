@@ -27,6 +27,37 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 SUPPORT_EMAIL  = "support@aeversa.com"
 FROM_EMAIL     = "AE Support Bot <onboarding@resend.dev>"  # Update to your domain once verified
 
+# ── Media Library ─────────────────────────────────────────────────────────────
+# Replace each URL below with the actual GitHub raw URL once images/videos are uploaded
+# Format: https://raw.githubusercontent.com/support293/aeversa-bot/main/media/filename.jpg
+# For videos: https://raw.githubusercontent.com/support293/aeversa-bot/main/media/filename.mp4
+
+GITHUB_MEDIA_BASE = "https://raw.githubusercontent.com/support293/aeversa-bot/main/media"
+
+MEDIA = {
+    # ── Images ────────────────────────────────────────────────────────────────
+    "cable_plugin":         f"{GITHUB_MEDIA_BASE}/cable-plugin.jpg",
+    "charger_id_northgate": f"{GITHUB_MEDIA_BASE}/charger-id-northgate.jpg",
+    "charger_id_other":     f"{GITHUB_MEDIA_BASE}/charger-id-other.jpg",
+    "stop_session":         f"{GITHUB_MEDIA_BASE}/stop-session.jpg",
+    "wifi_symbol_wattspot": f"{GITHUB_MEDIA_BASE}/wifi-symbol-wattspot.jpg",
+    "4g_symbol_other":      f"{GITHUB_MEDIA_BASE}/4g-symbol-other.jpg",
+
+    # ── Videos ────────────────────────────────────────────────────────────────
+    "video_how_to_start":   f"{GITHUB_MEDIA_BASE}/how-to-start-session.mp4",
+    "video_how_to_stop":    f"{GITHUB_MEDIA_BASE}/how-to-stop-session.mp4",
+}
+
+# Set to False until media files are uploaded to GitHub
+MEDIA_ENABLED = os.environ.get("MEDIA_ENABLED", "false").lower() == "true"
+
+
+def get_media(key: str) -> str | None:
+    """Returns the media URL for a given key, or None if media is disabled."""
+    if not MEDIA_ENABLED:
+        return None
+    return MEDIA.get(key)
+
 # ── Load Knowledge Base ────────────────────────────────────────────────────────
 KB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge_base.json")
 
@@ -338,7 +369,7 @@ def ask_claude(message_text: str):
 
 # ── State Machine ─────────────────────────────────────────────────────────────
 
-def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> str:
+def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple[str, str | None]:
     msg = msg_raw.strip().lower()
     state = user_states.get(user_id, {"step": "start"})
     step = state.get("step", "start")
@@ -479,7 +510,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> str:
                 "✅ Good.\n\n"
                 "Please *unplug the charging cable* and plug it back in firmly into the vehicle.\n\n"
                 "Has this fixed the issue? Is your vehicle now charging?\n\n"
-                "Reply *YES* or *NO*"
+                "Reply *YES* or *NO*",
+                get_media("cable_plugin")
             )
         elif msg == "no":
             user_states[user_id] = {**state, "step": "opt1_removed_key_try"}
@@ -698,8 +730,10 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> str:
             user_states[user_id] = {**state, "step": "opt3_still_slow"}
             return (
                 "Great! Please stop the session and start it again.\n\n"
+                "🎥 Watch the short video above if you need help stopping the session.\n\n"
                 "Is the charging speed *still slow* after restarting?\n\n"
-                "Reply *YES* or *NO*"
+                "Reply *YES* or *NO*",
+                get_media("video_how_to_stop")
             )
         elif msg == "no":
             user_states[user_id] = {**state, "step": "opt3_still_slow"}
@@ -747,7 +781,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> str:
                 "📍 *Wattspot Site*\n\n"
                 "Please check the *WiFi symbol at the top of the charger.*\n\n"
                 "Is the WiFi symbol *White* or *Red*?\n\n"
-                "Reply *WHITE* or *RED*"
+                "Reply *WHITE* or *RED*",
+                get_media("wifi_symbol_wattspot")
             )
         elif msg in ["2", "other"]:
             user_states[user_id] = {**state, "step": "opt3_other_4g"}
@@ -759,7 +794,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> str:
                 "Reply:\n"
                 "*1* – 4G symbol is greyed out\n"
                 "*2* – There is a red cross on a symbol\n"
-                "*3* – Everything looks normal"
+                "*3* – Everything looks normal",
+                get_media("4g_symbol_other")
             )
         else:
             return "Please reply *1* for Wattspot or *2* for Other."
@@ -869,24 +905,27 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> str:
         user_states[user_id] = {**state, "step": "charger_fault_id",
                                  "site": site, "fault_type": "Charger not working"}
 
-        # Give location-specific Charger ID instructions
+        # Give location-specific Charger ID instructions with matching image
         known_sites = ["northgate", "fourways", "wynberg"]
         if any(s in site_lower for s in known_sites):
             charger_id_hint = (
                 "📍 For *{site}*, the Charger ID is located on the *right hand side "
                 "at the bottom of the charger unit.*"
             ).format(site=site)
+            media_key = "charger_id_northgate"
         else:
             charger_id_hint = (
                 "📍 The Charger ID (serial number) is located either on the "
                 "*back of the charger* or on the *left hand side*, both more towards the top of the unit."
             )
+            media_key = "charger_id_other"
 
         return (
             f"Thank you — noted that you are at *{site}*.\n\n"
             f"Which *charger* are you having issues with?\n\n"
             f"{charger_id_hint}\n\n"
-            f"Please type the *Charger ID* once you have it."
+            f"Please type the *Charger ID* once you have it.",
+            get_media(media_key)
         )
 
     if step == "charger_fault_id":
@@ -912,7 +951,13 @@ def webhook():
     sender    = request.form.get("From", "unknown")
     has_media = request.form.get("NumMedia", "0") != "0"
 
-    response_text = handle_message(sender, incoming, has_media=has_media)
+    result = handle_message(sender, incoming, has_media=has_media)
+
+    # handle_message returns either a string or a (text, media_url) tuple
+    if isinstance(result, tuple):
+        response_text, media_url = result
+    else:
+        response_text, media_url = result, None
 
     # ── Auto-detect escalation and send support email ─────────────────────────
     if "Connecting you to a support agent" in response_text:
@@ -926,8 +971,13 @@ def webhook():
             extra_notes     = state.get("extra_notes")
         )
 
+    # ── Build TwiML response ──────────────────────────────────────────────────
     resp = MessagingResponse()
-    resp.message(response_text)
+    msg  = resp.message(response_text)
+    if media_url:
+        msg.media(media_url)
+        log.info(f"📎 Sending media: {media_url}")
+
     return str(resp)
 
 
