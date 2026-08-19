@@ -904,18 +904,18 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
         user_states[user_id] = {**state, "step": "charger_fault_id",
                                  "site": site, "fault_type": "Charger not working"}
 
-        # Give location-specific Charger ID instructions with matching image
-        known_sites = ["northgate", "fourways", "wynberg"]
-        if any(s in site_lower for s in known_sites):
+        # Give charger-type-specific instructions with matching image
+        wattspot_sites = ["northgate", "fourways", "wynberg"]
+        if any(s in site_lower for s in wattspot_sites):
             charger_id_hint = (
-                "📍 For *{site}*, the Charger ID is located on the *right hand side "
-                "at the bottom of the charger unit.*"
-            ).format(site=site)
+                "📍 The Charger ID sticker is on the *front of the charger, "
+                "underneath the screen*. Please see the image below for reference."
+            )
             media_key = "charger_id_northgate"
         else:
             charger_id_hint = (
-                "📍 The Charger ID (serial number) is located either on the "
-                "*back of the charger* or on the *left hand side*, both more towards the top of the unit."
+                "📍 The Charger ID sticker is on the *front of the charger, "
+                "underneath the screen*. Please see the image below for reference."
             )
             media_key = "charger_id_other"
 
@@ -923,7 +923,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
             f"Thank you — noted that you are at *{site}*.\n\n"
             f"Which *charger* are you having issues with?\n\n"
             f"{charger_id_hint}\n\n"
-            f"Please type the *Charger ID* once you have it.",
+            f"Please type the *Charger ID* once you have it. Please see the image below.",
             get_media(media_key)
         )
 
