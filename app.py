@@ -993,10 +993,16 @@ def webhook():
 
     # ── Build TwiML response ──────────────────────────────────────────────────
     resp = MessagingResponse()
-    msg  = resp.message(response_text)
+
     if media_url:
-        msg.media(media_url)
+        # Send text instruction first, then media as a separate message
+        # This ensures both are clearly visible on WhatsApp
+        resp.message(response_text)
+        media_msg = resp.message("👆 *Watch the guide above*")
+        media_msg.media(media_url)
         log.info(f"📎 Sending media: {media_url}")
+    else:
+        resp.message(response_text)
 
     return str(resp)
 
