@@ -264,6 +264,38 @@ FALLBACK = (
     "Please type *MENU* to see the options again, or type *AGENT* to speak to a support agent."
 )
 
+
+def start_escalation(user_id: str, state: dict, context_msg: str = "") -> str:
+    """
+    Routes to pre-escalation info gathering before connecting to agent.
+    Collects site name and Charger ID if not already captured.
+    context_msg: optional message to show before asking for missing info.
+    """
+    prefix = f"{context_msg}\n\n" if context_msg else ""
+    has_site      = bool(state.get("site"))
+    has_charger_id = bool(state.get("charger_id"))
+
+    if has_site and has_charger_id:
+        # Have everything — go straight to agent
+        user_states[user_id] = {**state, "step": "start"}
+        return f"{prefix}{AGENT_INTRO}"
+    elif has_site:
+        # Have site, just need Charger ID
+        user_states[user_id] = {**state, "step": "pre_escalate_charger_id"}
+        return (
+            f"{prefix}Before I connect you to an agent, I just need one more detail.\n\n"
+            "What is the *Charger ID*?\n\n"
+            "📍 The sticker is on the *front of the charger, underneath the screen.*\n\n"
+            "Please type it below."
+        )
+    else:
+        # Need both site and Charger ID
+        user_states[user_id] = {**state, "step": "pre_escalate_site"}
+        return (
+            f"{prefix}Before I connect you to an agent, I need a couple of quick details.\n\n"
+            "Which *site* are you calling from? Please type the site name."
+        )
+
 def sales_redirect_message() -> str:
     name = SALES_INFO.get("name", "our sales team")
     email = SALES_INFO.get("email", "")
@@ -382,8 +414,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
 
     # Agent request works from any step
     if msg in ["agent", "human", "person", "speak to someone", "4"]:
-        user_states[user_id] = {"step": "start"}
-        return AGENT_INTRO
+        return start_escalation(user_id, state)
 
     # Sales request works from any step
     if msg in ["sales", "sales rep", "sales agent"]:
@@ -417,8 +448,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
                 "Reply *YES* or *NO*"
             )
         elif msg == "4":
-            user_states[user_id] = {"step": "start"}
-            return AGENT_INTRO
+            return start_escalation(user_id, state)
 
         # ── Direct error code lookup ──────────────────────────────────────────
         # Handles: "76", "error 76", "error code 76", "err 76"
@@ -480,9 +510,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
                 "Which *site* are you calling from? Please type the site name."
             )
         elif intent == "agent":
-            user_states[user_id] = {"step": "start"}
-            prefix = f"{ai_reply}\n\n" if ai_reply else ""
-            return f"{prefix}{AGENT_INTRO}"
+            context = ai_reply if ai_reply else ""
+            return start_escalation(user_id, state, context)
         elif intent == "sales":
             user_states[user_id] = {"step": "start"}
             return sales_redirect_message()
@@ -595,10 +624,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
         if error:
             return error_code_response(error)
         # Unknown error code — log and escalate
-        return (
-            f"Thank you for that information. I have logged the error: *\"{error_msg}\"*\n\n"
-            f"{AGENT_INTRO}"
-        )
+        return start_escalation(user_id, state,
+            f"Thank you for that information. I have logged the error: *\"{error_msg}\"*")
 
     if step == "opt1_try_another_charger":
         if msg == "yes":
@@ -609,11 +636,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
                 "Reply *YES* or *NO*"
             )
         elif msg == "no":
-            user_states[user_id] = {"step": "start"}
-            return (
-                "No problem, we will get an agent to assist you right away.\n\n"
-                f"{AGENT_INTRO}"
-            )
+            return start_escalation(user_id, state,
+                "No problem, we will get an agent to assist you right away.")
         else:
             return "Please reply *YES* or *NO*. Is there another charger available at this location?"
 
@@ -632,11 +656,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
 
     if step == "opt1_site_name":
         site = msg_raw.strip()
-        user_states[user_id] = {**state, "step": "start", "site": site}
-        return (
-            f"Thank you. I have logged your location as *\"{site}\"*.\n\n"
-            f"{AGENT_INTRO}"
-        )
+        updated_state = {**state, "site": site}
+        user_states[user_id] = updated_state
+        return start_escalation(user_id, updated_state)
 
     # ══════════════════════════════════════════════════════════════════════════
     # OPTION 2 – CHARGER IS OFF
@@ -714,11 +736,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
 
     if step in ["opt2_site_name_escalate", "opt2_no_power_site_name"]:
         site = msg_raw.strip()
-        user_states[user_id] = {**state, "step": "start", "site": site}
-        return (
-            f"Thank you. I have logged your location as *\"{site}\"*.\n\n"
-            f"{AGENT_INTRO}"
-        )
+        updated_state = {**state, "site": site}
+        user_states[user_id] = updated_state
+        return start_escalation(user_id, updated_state)
 
     # ══════════════════════════════════════════════════════════════════════════
     # OPTION 3 – SLOW CHARGING
@@ -817,12 +837,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
                 "Reply *YES* or *NO*"
             )
         elif msg == "red":
-            user_states[user_id] = {**state, "step": "start"}
-            return (
-                "🔴 The charger is *offline* (WiFi is red).\n\n"
-                "Our support team will investigate this unit immediately.\n\n"
-                f"{AGENT_INTRO}"
-            )
+            return start_escalation(user_id, state,
+                "🔴 The charger is *offline* (WiFi is red).\n\nOur support team will investigate this unit immediately.")
         else:
             return "Please reply *WHITE* or *RED*. What colour is the WiFi symbol on the charger?"
 
@@ -831,12 +847,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
             user_states[user_id] = {**state, "step": "start"}
             return GREAT_NEWS
         elif msg == "no":
-            user_states[user_id] = {**state, "step": "start"}
-            return (
-                "I'm sorry the issue persists. 😔\n\n"
-                "Our support team will investigate further.\n\n"
-                f"{AGENT_INTRO}"
-            )
+            return start_escalation(user_id, state,
+                "I'm sorry the issue persists. 😔\n\nOur support team will investigate further.")
         else:
             return "Please reply *YES* or *NO*. Is your vehicle now charging?"
 
@@ -853,18 +865,11 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
                 "*3* – Everything looks normal"
             )
         if msg == "1":
-            user_states[user_id] = {"step": "start"}
-            return (
-                "⚠️ The *4G symbol is greyed out* — the charger is offline.\n\n"
-                "Please wait while we investigate.\n\n"
-                f"{AGENT_INTRO}"
-            )
+            return start_escalation(user_id, state,
+                "⚠️ The *4G symbol is greyed out* — the charger is offline.\n\nPlease wait while we investigate.")
         elif msg == "2":
-            user_states[user_id] = {"step": "start"}
-            return (
-                "⚠️ A *red cross* on the symbol indicates the charger is offline.\n\n"
-                f"{AGENT_INTRO}"
-            )
+            return start_escalation(user_id, state,
+                "⚠️ A *red cross* on the symbol indicates the charger is offline.")
         elif msg == "3":
             user_states[user_id] = {**state, "step": "opt3_other_final_restart"}
             return (
@@ -886,11 +891,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
             user_states[user_id] = {"step": "start"}
             return GREAT_NEWS
         elif msg == "yes":
-            user_states[user_id] = {"step": "start"}
-            return (
-                "We are sorry the issue persists. 😔\n\n"
-                f"{AGENT_INTRO}"
-            )
+            return start_escalation(user_id, state,
+                "We are sorry the issue persists. 😔")
         else:
             return "Please reply *YES* or *NO*. Is the charging speed still slow after restarting?"
 
@@ -936,6 +938,38 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
             f"📍 *Site:* {site}\n"
             f"🔌 *Charger ID:* {charger_id}\n\n"
             f"Our support team will investigate immediately.\n\n"
+            f"{AGENT_INTRO}"
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PRE-ESCALATION — collect site and charger ID before connecting agent
+    # ══════════════════════════════════════════════════════════════════════════
+
+    if step == "pre_escalate_site":
+        site = msg_raw.strip()
+        user_states[user_id] = {**state, "step": "pre_escalate_charger_id", "site": site}
+        return (
+            f"Thank you — noted that you are at *{site}*.\n\n"
+            "What is the *Charger ID*?\n\n"
+            "📍 The sticker is on the *front of the charger, underneath the screen.*\n\n"
+            "Please type it below.",
+            get_media("charger_id_northgate")
+        )
+
+    if step == "pre_escalate_charger_id":
+        charger_id = msg_raw.strip()
+        site       = state.get("site", "Not provided")
+        fault_type = state.get("fault_type", "Not specified")
+        error_code = state.get("error_code", "")
+        user_states[user_id] = {**state, "step": "start", "charger_id": charger_id}
+        error_line = f"🔴 *Error Code:* {error_code}\n" if error_code else ""
+        return (
+            f"Thank you. I have logged the following details:\n\n"
+            f"📍 *Site:* {site}\n"
+            f"🔌 *Charger ID:* {charger_id}\n"
+            f"⚠️ *Fault:* {fault_type}\n"
+            f"{error_line}\n"
+            f"Connecting you to our support team now.\n\n"
             f"{AGENT_INTRO}"
         )
 
