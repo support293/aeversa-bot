@@ -36,16 +36,16 @@ GITHUB_MEDIA_BASE = "https://raw.githubusercontent.com/support293/aeversa-bot/ma
 
 MEDIA = {
     # ── Images ────────────────────────────────────────────────────────────────
-    "cable_plugin":         f"{GITHUB_MEDIA_BASE}/cable-plugin.jpg",
-    "charger_id_northgate": f"{GITHUB_MEDIA_BASE}/charger-id-northgate.jpg",
-    "charger_id_other":     f"{GITHUB_MEDIA_BASE}/charger-id-other.jpg",
-    "stop_session":         f"{GITHUB_MEDIA_BASE}/stop-session.jpg",
-    "wifi_symbol_wattspot": f"{GITHUB_MEDIA_BASE}/wifi-symbol-wattspot.jpg",
-    "4g_symbol_other":      f"{GITHUB_MEDIA_BASE}/4g-symbol-other.jpg",
+    "cable_plugin":         f"{GITHUB_MEDIA_BASE}/cable-plugin.jpg.jpeg",
+    "charger_id_northgate": f"{GITHUB_MEDIA_BASE}/charger-id-northgate.jpg.jpeg",
+    "charger_id_other":     f"{GITHUB_MEDIA_BASE}/charger-id-other.jpg.jpeg",
+    "stop_session":         f"{GITHUB_MEDIA_BASE}/stop-session.jpg.jpeg",
+    "wifi_symbol_wattspot": f"{GITHUB_MEDIA_BASE}/wifi-symbol-wattspot.jpg.jpeg",
+    "4g_symbol_other":      f"{GITHUB_MEDIA_BASE}/4g-symbol-other.jpeg",
 
     # ── Videos ────────────────────────────────────────────────────────────────
     "video_how_to_start":   f"{GITHUB_MEDIA_BASE}/how-to-start-session.mp4",
-    "video_how_to_stop":    f"{GITHUB_MEDIA_BASE}/how-to-stop-session.mp4",
+    "video_how_to_stop":    f"{GITHUB_MEDIA_BASE}/how-to-stop-session.mp4.mp4",
 }
 
 # Set to False until media files are uploaded to GitHub
