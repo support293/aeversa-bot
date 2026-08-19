@@ -957,6 +957,22 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
         )
 
     if step == "pre_escalate_charger_id":
+        # Detect if customer is asking a question rather than providing the ID
+        question_phrases = [
+            "where", "how", "what", "find", "locate", "look", "?",
+            "can i find", "can you", "don't know", "not sure", "no idea",
+            "which", "help", "show me"
+        ]
+        if any(phrase in msg for phrase in question_phrases):
+            return (
+                "📍 The *Charger ID* sticker is on the *front of the charger, "
+                "underneath the screen.*\n\n"
+                "It is a combination of letters and numbers — for example *CPO-001* "
+                "or *AE-12345*.\n\n"
+                "Please type the Charger ID once you have found it. 😊",
+                get_media("charger_id_northgate")
+            )
+
         charger_id = msg_raw.strip()
         site       = state.get("site", "Not provided")
         fault_type = state.get("fault_type", "Not specified")
