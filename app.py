@@ -28,24 +28,23 @@ SUPPORT_EMAIL  = "support@aeversa.com"
 FROM_EMAIL     = "AE Support Bot <onboarding@resend.dev>"  # Update to your domain once verified
 
 # ── Media Library ─────────────────────────────────────────────────────────────
-# Replace each URL below with the actual GitHub raw URL once images/videos are uploaded
-# Format: https://raw.githubusercontent.com/support293/aeversa-bot/main/media/filename.jpg
-# For videos: https://raw.githubusercontent.com/support293/aeversa-bot/main/media/filename.mp4
-
-GITHUB_MEDIA_BASE = "https://raw.githubusercontent.com/support293/aeversa-bot/main/media"
+# Media is served directly from the bot's own server (Render)
+# This is more reliable than GitHub raw URLs for Twilio media messages
+RENDER_URL     = os.environ.get("RENDER_URL", "https://aeversa-bot.onrender.com")
+MEDIA_BASE     = f"{RENDER_URL}/media"
 
 MEDIA = {
     # ── Images ────────────────────────────────────────────────────────────────
-    "cable_plugin":         f"{GITHUB_MEDIA_BASE}/cable-plugin.mp4.mp4",
-    "charger_id_northgate": f"{GITHUB_MEDIA_BASE}/charger-id-northgate.jpg.jpeg",
-    "charger_id_other":     f"{GITHUB_MEDIA_BASE}/charger-id-other.jpg.jpeg",
-    "stop_session":         f"{GITHUB_MEDIA_BASE}/stop-session.jpg.jpeg",
-    "wifi_symbol_wattspot": f"{GITHUB_MEDIA_BASE}/wifi-symbol-wattspot.jpg.jpeg",
-    "4g_symbol_other":      f"{GITHUB_MEDIA_BASE}/4g-symbol-other.jpeg",
+    "cable_plugin":         f"{MEDIA_BASE}/cable-plugin.mp4.mp4",
+    "charger_id_northgate": f"{MEDIA_BASE}/charger-id-northgate.jpg.jpeg",
+    "charger_id_other":     f"{MEDIA_BASE}/charger-id-other.jpg.jpeg",
+    "stop_session":         f"{MEDIA_BASE}/stop-session.jpg.jpeg",
+    "wifi_symbol_wattspot": f"{MEDIA_BASE}/wifi-symbol-wattspot.jpg.jpeg",
+    "4g_symbol_other":      f"{MEDIA_BASE}/4g-symbol-other.jpeg",
 
     # ── Videos ────────────────────────────────────────────────────────────────
-    "video_how_to_start":   f"{GITHUB_MEDIA_BASE}/how-to-start-session.mp4",
-    "video_how_to_stop":    f"{GITHUB_MEDIA_BASE}/how-to-stop-session.mp4.mp4",
+    "video_how_to_start":   f"{MEDIA_BASE}/how-to-start-session.mp4",
+    "video_how_to_stop":    f"{MEDIA_BASE}/how-to-stop-session.mp4.mp4",
 }
 
 # Set to False until media files are uploaded to GitHub
@@ -942,6 +941,27 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
 
     # ── Default Fallback ──────────────────────────────────────────────────────
     return FALLBACK
+
+
+# ── Media File Server ─────────────────────────────────────────────────────────
+import mimetypes
+from pathlib import Path
+
+MEDIA_DIR = Path(__file__).parent / "media"
+
+@app.route("/media/<path:filename>")
+def serve_media(filename):
+    """Serves media files directly from the media folder."""
+    file_path = MEDIA_DIR / filename
+    if not file_path.exists():
+        log.warning(f"Media file not found: {filename}")
+        return "File not found", 404
+    mime_type, _ = mimetypes.guess_type(str(file_path))
+    mime_type = mime_type or "application/octet-stream"
+    log.info(f"Serving media: {filename} ({mime_type})")
+    with open(file_path, "rb") as f:
+        from flask import Response
+        return Response(f.read(), mimetype=mime_type)
 
 
 # ── Webhook ───────────────────────────────────────────────────────────────────
