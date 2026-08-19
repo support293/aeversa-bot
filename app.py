@@ -925,7 +925,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
             f"Thank you — noted that you are at *{site}*.\n\n"
             f"Which *charger* are you having issues with?\n\n"
             f"{charger_id_hint}\n\n"
-            f"Please type the *Charger ID* once you have it. Please see the image below.",
+            f"Please type the *Charger ID* once you have it.",
             get_media(media_key)
         )
 
