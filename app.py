@@ -729,7 +729,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
             user_states[user_id] = {**state, "step": "opt3_still_slow"}
             return (
                 "Great! Please stop the session and start it again.\n\n"
-                "🎥 Watch the short video above if you need help stopping the session.\n\n"
+                "🎥 Watch the short video below if you need help stopping the session.\n\n"
                 "Is the charging speed *still slow* after restarting?\n\n"
                 "Reply *YES* or *NO*",
                 get_media("video_how_to_stop")
@@ -998,7 +998,7 @@ def webhook():
         # Send text instruction first, then media as a separate message
         # This ensures both are clearly visible on WhatsApp
         resp.message(response_text)
-        media_msg = resp.message("👆 *Watch the guide above*")
+        media_msg = resp.message("📹 *Guide video*")
         media_msg.media(media_url)
         log.info(f"📎 Sending media: {media_url}")
     else:
