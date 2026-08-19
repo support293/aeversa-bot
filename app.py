@@ -996,11 +996,13 @@ def webhook():
 
     if media_url:
         # Send text instruction first, then media as a separate message
-        # This ensures both are clearly visible on WhatsApp
         resp.message(response_text)
-        media_msg = resp.message("📹 *Guide video*")
+        # Use appropriate caption based on media type
+        is_video = media_url.lower().endswith((".mp4", ".mp4.mp4", ".mov"))
+        caption = "📹 *Guide video*" if is_video else "📸 *Reference image*"
+        media_msg = resp.message(caption)
         media_msg.media(media_url)
-        log.info(f"📎 Sending media: {media_url}")
+        log.info(f"📎 Sending {'video' if is_video else 'image'}: {media_url}")
     else:
         resp.message(response_text)
 
