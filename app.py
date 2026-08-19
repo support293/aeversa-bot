@@ -36,7 +36,7 @@ GITHUB_MEDIA_BASE = "https://raw.githubusercontent.com/support293/aeversa-bot/ma
 
 MEDIA = {
     # ── Images ────────────────────────────────────────────────────────────────
-    "cable_plugin":         f"{GITHUB_MEDIA_BASE}/cable-plugin.jpg.jpeg",
+    "cable_plugin":         f"{GITHUB_MEDIA_BASE}/cable-plugin.mp4.mp4",
     "charger_id_northgate": f"{GITHUB_MEDIA_BASE}/charger-id-northgate.jpg.jpeg",
     "charger_id_other":     f"{GITHUB_MEDIA_BASE}/charger-id-other.jpg.jpeg",
     "stop_session":         f"{GITHUB_MEDIA_BASE}/stop-session.jpg.jpeg",
