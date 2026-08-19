@@ -507,7 +507,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
             user_states[user_id] = {**state, "step": "opt1_replug_fixed"}
             return (
                 "✅ Good.\n\n"
-                "Please *unplug the charging cable* and plug it back in firmly into the vehicle.\n\n"
+                "Please *unplug the charging cable*, wait 5 seconds and plug it back in firmly into the vehicle. Please see the video below.\n\n"
                 "Has this fixed the issue? Is your vehicle now charging?\n\n"
                 "Reply *YES* or *NO*",
                 get_media("cable_plugin")
