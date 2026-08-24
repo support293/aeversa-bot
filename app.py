@@ -660,7 +660,7 @@ GREETING = (
     "and send me the image. 📷\n\n"
     "I will use it to check your charger's status and help you "
     "as quickly as possible!\n\n"
-    "💡 _Can't find the QR code? Type your Charger ID instead._"
+    "💡 _Can't find the QR code? Send me the Ampcontrol link or type the Charger UUID._"
 )
 
 GREAT_NEWS = (
@@ -1064,14 +1064,13 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
     step = state.get("step", "start")
 
     # ── Global Commands — these work from ANY step ────────────────────────────
-    # Greetings always reset the conversation regardless of current state
-    if msg in ["menu", "start", "hi", "hello", "hey", "hiya", "howzit",
-               "good morning", "good afternoon", "good evening", "good day"]:
+    # MENU resets to start from anywhere
+    if msg in ["menu", "start"]:
         user_states[user_id] = {"step": "start"}
         return GREETING
 
     # Agent request works from any step
-    if msg in ["agent", "human", "person", "speak to someone", "4"]:
+    if msg in ["agent", "human", "person", "speak to someone"]:
         return start_escalation(user_id, state)
 
     # Sales request works from any step
@@ -1085,7 +1084,6 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             user_states[user_id] = {"step": "start"}
             return GREETING
         elif msg in ["no", "n", "nope"]:
-            # Restore previous step
             prev_step = state.get("prev_step", "start")
             user_states[user_id] = {**state, "step": prev_step}
             return (
@@ -1100,8 +1098,6 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             )
 
     # ── Mid-flow new issue detection ──────────────────────────────────────────
-    # If customer is mid-flow and clearly describes a completely new issue,
-    # offer to restart — but only for steps that expect YES/NO answers
     YES_NO_STEPS = [
         "opt1_key_removed", "opt1_replug_fixed", "opt1_removed_key_try",
         "opt1_error_check", "opt1_try_another_charger", "opt1_other_charger_working",
@@ -1117,18 +1113,17 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             "Reply *YES* to start fresh or *NO* to continue with your current issue."
         )
 
-    # ── MENU / START STEP ─────────────────────────────────────────────────────
+    # ── START STEP — always ask for QR code first ─────────────────────────────
     if step == "start":
-
-        # ── QR code or image sent ─────────────────────────────────────────────
+        # QR code or image sent
         if has_media and received_media:
             return handle_qr_or_image(user_id, state, received_media, msg_raw)
 
-        # ── Agent / Sales shortcuts ───────────────────────────────────────────
+        # Agent / Sales shortcuts
         if msg == "4":
             return start_escalation(user_id, state)
 
-        # ── Direct error code lookup ──────────────────────────────────────────
+        # Error code typed directly
         extracted_code = extract_error_code(msg.strip())
         if extracted_code:
             error = lookup_error_code(extracted_code)
@@ -1136,43 +1131,15 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 user_states[user_id] = {"step": "start"}
                 return error_code_response(error)
 
-        # ── If customer types/pastes UUID or Ampcontrol URL ───────────────────
+        # UUID or Ampcontrol URL pasted
         charger_uuid = extract_uuid_from_text(msg_raw)
         if charger_uuid:
             return lookup_charger_and_respond(user_id, state, charger_uuid)
 
-        # ── Free text — ask Claude to understand intent ───────────────────────
-        ai_result = ask_claude(msg_raw)
-
-        if ai_result is None:
-            return GREETING
-
-        intent  = ai_result.get("intent", "unclear")
-        ai_reply = ai_result.get("reply", "")
-
-        # Any charging issue → ask for QR code first
-        if intent in ["not_charging", "charger_off", "slow_charging", "charger_fault"]:
-            prefix = f"{ai_reply}\n\n" if ai_reply else ""
-            user_states[user_id] = {**state, "fault_hint": intent}
-            return (
-                f"{prefix}To help you quickly, please *scan the QR code* on the "
-                "charger and send me the image. 📷\n\n"
-                "I will check your charger's status immediately!\n\n"
-                "💡 _Can't find the QR code? Send me the Ampcontrol link or type the Charger UUID._"
-            )
-        elif intent == "agent":
-            return start_escalation(user_id, state, ai_reply)
-        elif intent == "sales":
-            user_states[user_id] = {"step": "start"}
-            return sales_redirect_message()
-        elif intent == "general":
-            user_states[user_id] = {"step": "start"}
-            return f"{ai_reply}\n\nIs there anything else I can help with? Type *MENU* to start."
-        elif intent == "greeting":
-            user_states[user_id] = {"step": "start"}
-            return GREETING
-        else:
-            return GREETING
+        # EVERYTHING ELSE — always ask for QR code
+        # This includes greetings, questions, random text, anything
+        user_states[user_id] = {"step": "await_qr"}
+        return GREETING
 
     # ── Waiting for QR code ───────────────────────────────────────────────────
     if step == "await_qr":
