@@ -443,7 +443,7 @@ def get_charger_status(charger_uuid: str) -> dict:
     Fetches charger details from Ampcontrol.
     Returns dict with: online (bool), name (str), status (str), raw (dict)
     """
-    data = ampcontrol_get(f"/chargepoints/{charger_uuid}")
+    data = ampcontrol_get(f"/chargepoints/{charger_uuid}/")
     if not data or not data.get("data"):
         return {"online": None, "name": "Unknown", "status": "unknown", "raw": {}}
 
