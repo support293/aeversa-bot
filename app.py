@@ -510,22 +510,24 @@ def restart_charger(charger_uuid: str) -> bool:
 
 def extract_uuid_from_text(text: str) -> str | None:
     """
-    Extracts a charger UUID from any text format:
-    - Ampcontrol URL: https://portal.ampcontrol.io/#/charger/{UUID}/overview
-    - Bare UUID: 6cd2389b-a278-5463-a8b2-f793603971b3
-    - UUID embedded anywhere in text
+    Extracts a charger UUID from text.
+    Only matches Ampcontrol URLs or properly formatted UUIDs.
+    Never treats random words as a UUID.
     """
     import re
-    # Try Ampcontrol URL pattern first
-    uuid_from_url = extract_charger_id_from_qr(text.strip())
-    if uuid_from_url:
-        return uuid_from_url
-    # Search for any UUID pattern in the text
-    match = re.search(
-        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    # Try Ampcontrol URL pattern
+    url_match = re.search(
+        r"ampcontrol\.io/#/charger/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})",
         text, re.IGNORECASE
     )
-    return match.group(0) if match else None
+    if url_match:
+        return url_match.group(1)
+    # Try bare UUID pattern (strict format only)
+    uuid_match = re.search(
+        r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}",
+        text, re.IGNORECASE
+    )
+    return uuid_match.group(0) if uuid_match else None
 
 
 def search_charger_by_name(name: str) -> dict | None:
@@ -582,20 +584,23 @@ def read_qr_code(image_url: str) -> str | None:
 
 def extract_charger_id_from_qr(qr_data: str) -> str | None:
     """
-    Extracts the Charger ID from a QR code URL.
-    Handles ampcontrol URLs:
-    https://portal.ampcontrol.io/#/charger/{UUID}/overview
+    Extracts Charger UUID from decoded QR code data.
+    Only handles Ampcontrol URLs and bare UUID format.
     """
     import re
-    # Match ampcontrol UUID pattern
+    # Match Ampcontrol URL
     match = re.search(
-        r"ampcontrol\.io/#/charger/([a-f0-9\-]{36})",
-        qr_data
+        r"ampcontrol\.io/#/charger/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})",
+        qr_data, re.IGNORECASE
     )
     if match:
         return match.group(1)
-    # If QR data is not a URL, return it directly as the Charger ID
-    if not qr_data.startswith("http"):
+    # Match bare UUID format only
+    uuid_match = re.fullmatch(
+        r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}",
+        qr_data.strip(), re.IGNORECASE
+    )
+    if uuid_match:
         return qr_data.strip()
     return None
 
@@ -1172,25 +1177,18 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         if has_media and received_media:
             return handle_qr_or_image(user_id, state, received_media, msg_raw)
 
-        # Check for UUID or Ampcontrol URL
+        # Check for UUID or Ampcontrol URL only
         charger_uuid = extract_uuid_from_text(msg_raw)
         if charger_uuid:
             return lookup_charger_and_respond(user_id, state, charger_uuid)
 
-        # Try searching Ampcontrol by name
-        if len(msg_raw.strip()) >= 3:
-            charger = search_charger_by_name(msg_raw.strip())
-            if charger:
-                charger_uuid = charger.get("id", "")
-                log.info(f"Found charger by name search: {charger.get('customName') or charger.get('name')}")
-                return lookup_charger_and_respond(user_id, state, charger_uuid)
-
+        # Not a UUID — guide them clearly
         return (
-            "Thanks for that — I couldn't find a charger with that name. 😊\n\n"
-            "Please try:\n"
+            "I need the *Charger UUID* or *Ampcontrol link* to look up your charger. 😊\n\n"
+            "The easiest options:\n\n"
             "📷 Send the *QR code image* from the charger\n"
-            "🔗 Paste the *Ampcontrol link* from the portal\n"
-            "🔤 Type the exact *charger name* as shown in Ampcontrol\n\n"
+            "🔗 Paste the link from your browser:\n"
+            "`https://portal.ampcontrol.io/#/charger/.../overview`\n\n"
             "Or type *AGENT* to speak to someone directly."
         )
 
