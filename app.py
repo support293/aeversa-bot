@@ -5,7 +5,1947 @@ import threading
 import logging
 from datetime import datetime
 from flask import Flask, request
+from twiimport os
+import json
+import requests
+import threading
+import logging
+from datetime import datetime
+from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.rest import Client as TwilioClient
+
+# ── Logging setup ──────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [AE-Ace] %(levelname)s: %(message)s",
+    force=True
+)
+log = logging.getLogger(__name__)
+
+app = Flask(__name__)
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+ANTHROPIC_API_KEY    = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL      = "claude-sonnet-4-6"
+ANTHROPIC_URL        = "https://api.anthropic.com/v1/messages"
+
+# Twilio credentials — add these to Render environment variables
+TWILIO_ACCOUNT_SID   = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN    = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_WA_NUMBER     = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
+
+# Email configuration — set RESEND_API_KEY in Render environment variables
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+SUPPORT_EMAIL  = "support@aeversa.com"
+FROM_EMAIL     = "AE Support Bot <onboarding@resend.dev>"
+
+# ── Ampcontrol Configuration ──────────────────────────────────────────────────
+AMPCONTROL_EMAIL    = os.environ.get("AMPCONTROL_EMAIL", "")
+AMPCONTROL_PASSWORD = os.environ.get("AMPCONTROL_PASSWORD", "")
+AMPCONTROL_TOKEN_STORED = os.environ.get("AMPCONTROL_TOKEN", "")  # Pre-stored token (preferred)
+AMPCONTROL_BASE     = "https://api.ampcontrol.io/v2"
+
+# Token cache
+_ampcontrol_token: str = ""
+_ampcontrol_token_expiry: float = 0.0
+_ampcontrol_lock = threading.Lock()
+
+# ── Agent Configuration ────────────────────────────────────────────────────────
+AGENT_NUMBERS = {
+    "whatsapp:+27728472288": "Given",
+    "whatsapp:+27670085445": "Thapelo",
+    "whatsapp:+46704588801": "Mike",
+}
+PAUSE_DURATION_HOURS = 4
+
+# ── Paused Customers ───────────────────────────────────────────────────────────
+# {customer_whatsapp_number: pause_expiry_unix_timestamp}
+paused_customers: dict[str, float] = {}
+
+# ── Media Library ─────────────────────────────────────────────────────────────
+# Media is served directly from the bot's own server (Render)
+# This is more reliable than GitHub raw URLs for Twilio media messages
+RENDER_URL     = os.environ.get("RENDER_URL", "https://aeversa-bot.onrender.com")
+MEDIA_BASE     = f"{RENDER_URL}/media"
+
+MEDIA = {
+    # ── Images ────────────────────────────────────────────────────────────────
+    "cable_plugin":         f"{MEDIA_BASE}/cable-plugin.mp4.mp4",
+    "charger_id_northgate": f"{MEDIA_BASE}/charger-id-northgate.jpg.jpeg",
+    "charger_id_other":     f"{MEDIA_BASE}/charger-id-other.jpg.jpeg",
+    "stop_session":         f"{MEDIA_BASE}/stop-session.jpg.jpeg",
+    "wifi_symbol_wattspot": f"{MEDIA_BASE}/wifi-symbol-wattspot.jpg.jpeg",
+    "4g_symbol_other":      f"{MEDIA_BASE}/4g-symbol-other.jpeg",
+
+    # ── Videos ────────────────────────────────────────────────────────────────
+    "video_how_to_start":   f"{MEDIA_BASE}/how-to-start-session.mp4",
+    "video_how_to_stop":    f"{MEDIA_BASE}/how-to-stop-session.mp4.mp4",
+}
+
+# Set to False until media files are uploaded to GitHub
+MEDIA_ENABLED = os.environ.get("MEDIA_ENABLED", "false").lower() == "true"
+
+
+def get_media(key: str) -> str | None:
+    """Returns the media URL for a given key, or None if media is disabled."""
+    if not MEDIA_ENABLED:
+        return None
+    return MEDIA.get(key)
+
+# ── Load Knowledge Base ────────────────────────────────────────────────────────
+KB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge_base.json")
+
+def load_knowledge_base():
+    try:
+        with open(KB_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Failed to load knowledge base: {e}")
+        return {"company_info": {}, "faqs": []}
+
+KNOWLEDGE_BASE = load_knowledge_base()
+
+
+def _send_email_worker(customer_number: str, fault_type: str,
+                       site: str, charger_id: str,
+                       error_code: str, extra_notes: str):
+    """Runs in a background thread — sends escalation email via Resend HTTP API."""
+    try:
+        log.info(f"Sending escalation email | {customer_number} | {fault_type} | {site}")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        rows = [("📱 Customer WhatsApp", customer_number),
+                ("🕐 Time", timestamp),
+                ("⚠️  Fault Type", fault_type or "Not specified")]
+        if site:        rows.append(("📍 Site", site))
+        if charger_id:  rows.append(("🔌 Charger ID", charger_id))
+        if error_code:  rows.append(("🔴 Error Code", error_code))
+        if extra_notes: rows.append(("📋 Notes", extra_notes))
+
+        html_rows = "".join(
+            f"<tr>"
+            f"<td style='padding:10px 12px;background:#f8f8f8;font-weight:bold;"
+            f"width:170px;border-bottom:1px solid #eee'>{label}</td>"
+            f"<td style='padding:10px 12px;border-bottom:1px solid #eee'>{value}</td>"
+            f"</tr>"
+            for label, value in rows
+        )
+
+        html_body = f"""
+        <html><body style='font-family:Arial,sans-serif;color:#333;margin:0;padding:0'>
+          <div style='max-width:600px;margin:32px auto;border:1px solid #ddd;
+                      border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08)'>
+            <div style='background:#0f172a;padding:20px 28px'>
+              <h2 style='color:#fff;margin:0;font-size:20px'>⚡ AE Support Escalation</h2>
+              <p style='color:#94a3b8;margin:6px 0 0;font-size:13px'>
+                Aeversa (PTY) Ltd — Automated Support Alert</p>
+            </div>
+            <div style='padding:28px'>
+              <p style='margin-top:0;font-size:15px'>
+                A customer has been escalated and requires agent assistance.</p>
+              <table style='width:100%;border-collapse:collapse;font-size:14px;
+                            border:1px solid #eee;border-radius:6px;overflow:hidden'>
+                {html_rows}
+              </table>
+              <div style='margin-top:24px;padding:16px;background:#fefce8;
+                          border-left:4px solid #eab308;border-radius:4px;font-size:14px'>
+                <strong>⚡ Action Required:</strong> Please respond to the customer on WhatsApp
+                at <strong>{customer_number}</strong> as soon as possible.
+              </div>
+            </div>
+            <div style='background:#f9fafb;padding:14px 28px;
+                        font-size:12px;color:#9ca3af;border-top:1px solid #eee'>
+              Automatically generated by AE-Ace — Aeversa WhatsApp Support Bot
+            </div>
+          </div>
+        </body></html>
+        """
+
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "from": FROM_EMAIL,
+                "to": [SUPPORT_EMAIL],
+                "subject": f"🔴 AE-Ace Escalation — {fault_type or 'Fault'} | {site or 'Unknown site'} | {timestamp}",
+                "html": html_body
+            },
+            timeout=15
+        )
+
+        if response.status_code in (200, 201):
+            log.info(f"✅ Escalation email sent to {SUPPORT_EMAIL}")
+        else:
+            log.error(f"❌ Resend API error {response.status_code}: {response.text}")
+
+    except Exception as e:
+        log.error(f"❌ Failed to send escalation email: {e}")
+
+
+def send_escalation_email(customer_number: str, fault_type: str,
+                          site: str = None, charger_id: str = None,
+                          error_code: str = None, extra_notes: str = None):
+    """Fires the email in a background thread so it never blocks the webhook."""
+    if not RESEND_API_KEY:
+        log.warning("Email not configured — RESEND_API_KEY missing from environment")
+        return
+    thread = threading.Thread(
+        target=_send_email_worker,
+        args=(customer_number, fault_type, site, charger_id, error_code, extra_notes),
+        daemon=True
+    )
+    thread.start()
+    log.info(f"📧 Email thread started for {customer_number}")
+
+
+# ── Agent Notification ────────────────────────────────────────────────────────
+
+def notify_agents(customer_number: str, state: dict):
+    """Sends WhatsApp notification to all agents when an escalation happens."""
+    def _notify():
+        if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+            log.warning("Twilio credentials not set — agent WhatsApp notification skipped")
+            return
+        fault_type = state.get("fault_type", "Not specified")
+        site       = state.get("site", "Not provided")
+        charger_id = state.get("charger_id") or state.get("charger_uuid") or "Not provided"
+        error_code = state.get("error_code", "")
+        clean_num  = customer_number.replace("whatsapp:", "")
+        error_line = f"🔴 *Error Code:* {error_code}\n" if error_code else ""
+        message = (
+            f"🔴 *AE-Ace Escalation*\n\n"
+            f"📱 *Customer:* {clean_num}\n"
+            f"⚠️ *Fault:* {fault_type}\n"
+            f"📍 *Site:* {site}\n"
+            f"🔌 *Charger ID:* {charger_id}\n"
+            f"{error_line}\n"
+            f"*To take over from AE-Ace:*\n"
+            f"Reply: *PAUSE {clean_num}*\n"
+            f"Then contact the customer directly on WhatsApp."
+        )
+        client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        for agent_wa, agent_name in AGENT_NUMBERS.items():
+            try:
+                client.messages.create(
+                    from_=TWILIO_WA_NUMBER,
+                    to=agent_wa,
+                    body=message
+                )
+                log.info(f"✅ Agent notification sent to {agent_name}")
+            except Exception as e:
+                log.error(f"❌ Failed to notify {agent_name}: {e}")
+
+    threading.Thread(target=_notify, daemon=True).start()
+
+
+# ── Pause / Resume Helpers ────────────────────────────────────────────────────
+
+def is_paused(customer_number: str) -> bool:
+    """Returns True if the bot is currently paused for this customer."""
+    expiry = paused_customers.get(customer_number)
+    if expiry is None:
+        return False
+    if datetime.now().timestamp() > expiry:
+        del paused_customers[customer_number]
+        return False
+    return True
+
+
+def handle_agent_command(sender: str, command: str) -> str:
+    """Processes commands sent by agents to control AE-Ace."""
+    agent_name = AGENT_NUMBERS.get(sender, "Agent")
+    cmd        = command.strip()
+    cmd_upper  = cmd.upper()
+
+    # ── PAUSE ──────────────────────────────────────────────────────────────────
+    if cmd_upper.startswith("PAUSE"):
+        parts = cmd.split()
+        if len(parts) < 2:
+            return "Usage: *PAUSE +27XXXXXXXXX*\nExample: PAUSE +27760260625"
+        number = parts[1].strip()
+        if not number.startswith("+"):
+            number = f"+{number}"
+        wa_number = f"whatsapp:{number}"
+        expiry = datetime.now().timestamp() + (PAUSE_DURATION_HOURS * 3600)
+        paused_customers[wa_number] = expiry
+        resume_time = datetime.fromtimestamp(expiry).strftime("%H:%M")
+        log.info(f"⏸️ Bot paused for {number} by {agent_name} until {resume_time}")
+        return (
+            f"⏸️ *AE-Ace paused for {number}*\n\n"
+            f"The bot will not respond to this customer for {PAUSE_DURATION_HOURS} hours "
+            f"(until {resume_time}).\n\n"
+            f"You can now assist them directly on WhatsApp.\n"
+            f"To resume early, reply: *RESUME {number}*"
+        )
+
+    # ── RESUME ─────────────────────────────────────────────────────────────────
+    if cmd_upper.startswith("RESUME"):
+        parts = cmd.split()
+        if len(parts) < 2:
+            return "Usage: *RESUME +27XXXXXXXXX*\nExample: RESUME +27760260625"
+        number = parts[1].strip()
+        if not number.startswith("+"):
+            number = f"+{number}"
+        wa_number = f"whatsapp:{number}"
+        if wa_number in paused_customers:
+            del paused_customers[wa_number]
+            log.info(f"▶️ Bot resumed for {number} by {agent_name}")
+            return (
+                f"▶️ *AE-Ace resumed for {number}*\n\n"
+                f"The bot will now respond to this customer's messages again."
+            )
+        return f"ℹ️ {number} is not currently paused."
+
+    # ── STATUS ─────────────────────────────────────────────────────────────────
+    if cmd_upper == "STATUS":
+        # Clean expired pauses first
+        now = datetime.now().timestamp()
+        expired = [k for k, v in paused_customers.items() if now > v]
+        for k in expired:
+            del paused_customers[k]
+        if not paused_customers:
+            return "✅ *No customers currently paused.*\nAE-Ace is handling all conversations."
+        lines = ["📋 *Currently paused customers:*\n"]
+        for wa_num, expiry in paused_customers.items():
+            remaining = int((expiry - now) / 60)
+            clean = wa_num.replace("whatsapp:", "")
+            lines.append(f"• *{clean}* — {remaining} mins remaining")
+        return "\n".join(lines)
+
+    # ── ACTIVE ─────────────────────────────────────────────────────────────────
+    if cmd_upper == "ACTIVE":
+        active = [
+            (uid, s) for uid, s in user_states.items()
+            if uid not in AGENT_NUMBERS and s.get("step", "start") != "start"
+        ]
+        if not active:
+            return "ℹ️ *No customers currently in active support flows.*"
+        lines = ["📊 *Active customer flows:*\n"]
+        for uid, s in active:
+            clean = uid.replace("whatsapp:", "")
+            fault = s.get("fault_type", "Unknown")
+            step  = s.get("step", "unknown")
+            paused = " ⏸️ PAUSED" if is_paused(uid) else ""
+            lines.append(f"• *{clean}*{paused}\n  Fault: {fault} | Step: {step}")
+        return "\n".join(lines)
+
+    # ── HELP / UNKNOWN ─────────────────────────────────────────────────────────
+    return (
+        f"🤖 *AE-Ace Agent Commands*\n\n"
+        f"*PAUSE +27XXXXXXXXX*\n"
+        f"Stop bot for a customer for {PAUSE_DURATION_HOURS} hours\n\n"
+        f"*RESUME +27XXXXXXXXX*\n"
+        f"Resume bot for a customer early\n\n"
+        f"*STATUS*\n"
+        f"See all paused customers\n\n"
+        f"*ACTIVE*\n"
+        f"See all customers in active flows"
+    )
+
+
+# ── Ampcontrol API ────────────────────────────────────────────────────────────
+
+def get_ampcontrol_token() -> str:
+    """
+    Returns a valid Ampcontrol bearer token.
+    Priority:
+    1. Pre-stored AMPCONTROL_TOKEN env var (set manually from browser session)
+    2. Cached token from previous login
+    3. Login via username/password (for non-SSO service accounts)
+    """
+    global _ampcontrol_token, _ampcontrol_token_expiry
+    with _ampcontrol_lock:
+        # Priority 1: Use pre-stored token from Render env var
+        if AMPCONTROL_TOKEN_STORED:
+            log.info("Using pre-stored AMPCONTROL_TOKEN")
+            return AMPCONTROL_TOKEN_STORED
+
+        # Priority 2: Use cached token if still valid
+        if _ampcontrol_token and datetime.now().timestamp() < _ampcontrol_token_expiry - 300:
+            return _ampcontrol_token
+
+        # Priority 3: Login with username/password (only works for non-SSO accounts)
+        if not AMPCONTROL_EMAIL or not AMPCONTROL_PASSWORD:
+            log.warning(
+                "No AMPCONTROL_TOKEN set and no credentials configured. "
+                "Please add AMPCONTROL_TOKEN to Render environment variables."
+            )
+            return ""
+
+        log.info(f"Attempting Ampcontrol password login for: {AMPCONTROL_EMAIL}")
+
+        ENDPOINTS = [
+            "https://api.ampcontrol.io/v2/sessions/",
+            "https://api.ampcontrol.io/sessions/",
+        ]
+        PAYLOADS = [
+            {"name": AMPCONTROL_EMAIL, "password": AMPCONTROL_PASSWORD},
+            {"email": AMPCONTROL_EMAIL, "password": AMPCONTROL_PASSWORD},
+        ]
+
+        for url in ENDPOINTS:
+            for payload in PAYLOADS:
+                try:
+                    response = requests.post(url, json=payload, timeout=8)
+                    log.info(f"Login [{url}] → {response.status_code}")
+                    if response.status_code == 200:
+                        data = response.json()
+                        token = (
+                            data.get("data", [{}])[0].get("session")
+                            or data.get("token")
+                            or data.get("access_token")
+                        )
+                        if token:
+                            _ampcontrol_token = token
+                            _ampcontrol_token_expiry = datetime.now().timestamp() + 86400
+                            log.info(f"✅ Ampcontrol login success via {url}")
+                            return token
+                except Exception as e:
+                    log.error(f"Login [{url}] exception: {e}")
+
+        log.error(
+            "❌ Ampcontrol authentication failed. "
+            "If using Google SSO, please set AMPCONTROL_TOKEN in Render env vars."
+        )
+        return ""
+
+
+def ampcontrol_get(endpoint: str) -> dict | None:
+    """Makes an authenticated GET request to Ampcontrol API."""
+    token = get_ampcontrol_token()
+    if not token:
+        return None
+    try:
+        response = requests.get(
+            f"{AMPCONTROL_BASE}{endpoint}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        log.error(f"❌ Ampcontrol GET {endpoint} failed: {e}")
+        return None
+
+
+def ampcontrol_post(endpoint: str, payload: dict) -> dict | None:
+    """Makes an authenticated POST request to Ampcontrol API."""
+    token = get_ampcontrol_token()
+    if not token:
+        return None
+    try:
+        response = requests.post(
+            f"{AMPCONTROL_BASE}{endpoint}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            },
+            json=payload,
+            timeout=10
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        log.error(f"❌ Ampcontrol POST {endpoint} failed: {e}")
+        return None
+
+
+def get_charger_status(charger_uuid: str) -> dict:
+    """
+    Fetches charger details from Ampcontrol.
+    Returns dict with: online (bool), name (str), status (str), raw (dict)
+    """
+    data = ampcontrol_get(f"/chargepoints/{charger_uuid}")
+    if not data or not data.get("data"):
+        return {"online": None, "name": "Unknown", "status": "unknown", "raw": {}}
+
+    charger = data["data"][0]
+    online_status = charger.get("onlineStatus", "").upper()
+    ocpp_status   = charger.get("ocppStatus", "")
+    name          = charger.get("customName") or charger.get("name") or charger_uuid[:8]
+
+    is_online = online_status == "ONLINE"
+    log.info(f"Charger {name} status: onlineStatus={online_status} ocppStatus={ocpp_status}")
+
+    return {
+        "online":  is_online,
+        "name":    name,
+        "status":  online_status,
+        "ocpp":    ocpp_status,
+        "raw":     charger
+    }
+
+
+def restart_charger(charger_uuid: str) -> bool:
+    """
+    Sends a remote Soft Reset OCPP command to the charger via Ampcontrol.
+    Returns True if the command was accepted.
+    """
+    import uuid as _uuid
+    payload = {
+        "chargePointId": charger_uuid,
+        "body": [2, str(_uuid.uuid4())[:8], "Reset", {"type": "Soft"}],
+        "source": "API",
+        "sendToCharger": True,
+        "operationType": "Reset",
+        "protocol": "ocpp1.6"
+    }
+    result = ampcontrol_post("/ocppmessages/", payload)
+    success = result is not None and result.get("status") == "success"
+    log.info(f"{'✅' if success else '❌'} Remote restart for {charger_uuid}: {success}")
+    return success
+
+
+def extract_uuid_from_text(text: str) -> str | None:
+    """
+    Extracts a charger UUID from any text format:
+    - Ampcontrol URL: https://portal.ampcontrol.io/#/charger/{UUID}/overview
+    - Bare UUID: 6cd2389b-a278-5463-a8b2-f793603971b3
+    - UUID embedded anywhere in text
+    """
+    import re
+    # Try Ampcontrol URL pattern first
+    uuid_from_url = extract_charger_id_from_qr(text.strip())
+    if uuid_from_url:
+        return uuid_from_url
+    # Search for any UUID pattern in the text
+    match = re.search(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        text, re.IGNORECASE
+    )
+    return match.group(0) if match else None
+
+
+def read_qr_code(image_url: str) -> str | None:
+    """
+    Reads a QR code from an image URL using the free QR Server API.
+    Returns the decoded text or None if it fails.
+    """
+    try:
+        # Twilio media URLs require authentication to access
+        # We pass the URL directly to the QR reading API
+        account_sid  = TWILIO_ACCOUNT_SID
+        auth_token   = TWILIO_AUTH_TOKEN
+
+        # Download the image from Twilio first (requires auth)
+        img_response = requests.get(
+            image_url,
+            auth=(account_sid, auth_token),
+            timeout=10
+        )
+        if img_response.status_code != 200:
+            log.warning(f"Failed to download image: {img_response.status_code}")
+            return None
+
+        # Send image bytes to QR Server API
+        qr_response = requests.post(
+            "https://api.qrserver.com/v1/read-qr-code/",
+            files={"file": ("qr.jpg", img_response.content, "image/jpeg")},
+            timeout=10
+        )
+        if qr_response.status_code != 200:
+            log.warning(f"QR API error: {qr_response.status_code}")
+            return None
+
+        data = qr_response.json()
+        decoded = data[0]["symbol"][0]["data"]
+        if decoded:
+            log.info(f"✅ QR code decoded: {decoded}")
+            return decoded
+        return None
+
+    except Exception as e:
+        log.error(f"QR read error: {e}")
+        return None
+
+
+def extract_charger_id_from_qr(qr_data: str) -> str | None:
+    """
+    Extracts the Charger ID from a QR code URL.
+    Handles ampcontrol URLs:
+    https://portal.ampcontrol.io/#/charger/{UUID}/overview
+    """
+    import re
+    # Match ampcontrol UUID pattern
+    match = re.search(
+        r"ampcontrol\.io/#/charger/([a-f0-9\-]{36})",
+        qr_data
+    )
+    if match:
+        return match.group(1)
+    # If QR data is not a URL, return it directly as the Charger ID
+    if not qr_data.startswith("http"):
+        return qr_data.strip()
+    return None
+
+
+def extract_error_code(text: str) -> str | None:
+    """Extracts a numeric error code from text like '76', 'error 76', 'error code 76'."""
+    import re
+    # Strip common prefixes and extract the number
+    cleaned = text.strip().lower()
+    cleaned = re.sub(r"(error\s*code|error|code|err)\s*", "", cleaned).strip()
+    if re.fullmatch(r"\d+", cleaned):
+        return cleaned
+    return None
+
+
+def lookup_error_code(code: str) -> dict | None:
+    """Looks up an error code in the knowledge base. Returns the error dict or None."""
+    for error in KNOWLEDGE_BASE.get("error_codes", []):
+        if str(error.get("code", "")) == str(code).strip():
+            return error
+    return None
+
+
+def error_code_response(error: dict) -> str:
+    """Formats a customer-friendly error code response."""
+    code = error.get("code", "")
+    message = error.get("customer_message", "")
+    self_service = error.get("self_service", False)
+
+    response = f"🔴 *Error Code {code}*\n\n{message}"
+
+    if not self_service:
+        response += f"\n\n{AGENT_INTRO}"
+    else:
+        response += (
+            "\n\nIf you have tried the steps above and the issue persists, "
+            "type *AGENT* to speak to a support agent or type *MENU* to start again."
+        )
+    return response
+
+
+def build_kb_text(kb: dict) -> str:
+    """Formats the knowledge base into plain text for Claude's system prompt."""
+    lines = []
+    info = kb.get("company_info", {})
+    if info:
+        lines.append(f"Company: {info.get('name', '')}")
+        lines.append(f"Support Hours: {info.get('support_hours', '')}")
+        lines.append(f"Support Email: {info.get('support_email', '')}")
+        lines.append("")
+
+    lines.append("FAQ KNOWLEDGE BASE (use this to answer general questions accurately):")
+    current_category = None
+    for item in kb.get("faqs", []):
+        category = item.get("category", "General")
+        if category != current_category:
+            lines.append(f"\n## {category}")
+            current_category = category
+        lines.append(f"Q: {item.get('question', '')}")
+        lines.append(f"A: {item.get('answer', '')}")
+    return "\n".join(lines)
+
+
+KB_TEXT = build_kb_text(KNOWLEDGE_BASE)
+SALES_INFO = KNOWLEDGE_BASE.get("company_info", {}).get("sales_contact", {})
+
+# ── Session State ─────────────────────────────────────────────────────────────
+user_states = {}
+
+# ── Messages ──────────────────────────────────────────────────────────────────
+
+GREETING = (
+    "👋 Hello, welcome to the Aeversa helpdesk!\n\n"
+    "My name is *AE-Ace* and I am here to get you charged up. ⚡\n\n"
+    "To get started, please *scan the QR code* on your charger "
+    "and send me the image. 📷\n\n"
+    "I will use it to check your charger's status and help you "
+    "as quickly as possible!\n\n"
+    "💡 _Can't find the QR code? Type your Charger ID instead._"
+)
+
+GREAT_NEWS = (
+    "🎉 *Great news! Glad we got you sorted and back on the road!* ⚡\n\n"
+    "If you need anything else, type *MENU* to start again."
+)
+
+AGENT_INTRO = (
+    "👤 *Connecting you to a support agent...*\n\n"
+    "Our team will be with you shortly.\n\n"
+    "🕗 *Support Hours:*\n"
+    "Monday – Friday: 07:00 – 19:00\n"
+    "Saturday: 08:00 – 14:00\n\n"
+    "For urgent faults outside these hours, please email:\n"
+    "📧 *support@aeversa.co.za*"
+)
+
+FALLBACK = (
+    "🤔 I didn't quite understand that.\n\n"
+    "Please type *MENU* to see the options again, or type *AGENT* to speak to a support agent."
+)
+
+
+def issue_menu(charger_name: str, confirmed_online: bool = True) -> str:
+    status_line = "✅ *Charger is online.*\n\n" if confirmed_online else ""
+    return (
+        f"{status_line}"
+        f"*Charger: {charger_name}*\n\n"
+        "What issue are you experiencing today?\n\n"
+        "🔴 *1* – My vehicle is not charging\n"
+        "🐢 *2* – The charging speed is slow\n"
+        "❓ *3* – Something else\n"
+        "👤 *4* – Speak to a support agent"
+    )
+
+
+def offline_message(charger_name: str) -> str:
+    return (
+        f"⚠️ *Charger {charger_name} is showing as OFFLINE* on our CPMS.\n\n"
+        "Our technical team has been notified and will investigate immediately.\n\n"
+    )
+
+
+def restart_message(charger_name: str) -> str:
+    return (
+        f"🔄 I am restarting *Charger {charger_name}* remotely right now...\n\n"
+        "Please *unplug your vehicle*, wait *2 minutes*, then plug back in firmly.\n\n"
+        "Is your vehicle now charging?\n\n"
+        "Reply *YES* or *NO*"
+    )
+
+
+# ── Smart Response Interpretation ────────────────────────────────────────────
+
+POSITIVE_PHRASES = [
+    "charging now", "it's charging", "its charging", "is charging",
+    "working now", "it works", "it's working", "its working",
+    "started", "fixed", "sorted", "resolved", "all good", "good now",
+    "faster now", "normal now", "charging fine", "it charged",
+    "began charging", "started charging", "yes it is", "yes it's",
+    "seems to be working", "looks good", "working again", "charges now",
+]
+
+NEGATIVE_PHRASES = [
+    "still not", "not working", "doesn't work", "does not work",
+    "wont work", "won't work", "still broken", "same issue",
+    "same problem", "nothing changed", "no change", "not fixed",
+    "still happening", "still the same", "tried that", "already tried",
+    "already did", "multiple times", "5 times", "several times",
+    "3 times", "4 times", "many times", "keeps happening",
+    "still showing", "still offline", "still slow", "still not charging",
+    "not helping", "didn't help", "did not help", "no luck",
+    "tried again", "tried it again",
+]
+
+NEW_ISSUE_PHRASES = [
+    "my charger is", "charger is broken", "charger is not working",
+    "charger is off", "charger not working", "charger won't work",
+    "my vehicle is", "vehicle is not", "different problem",
+    "new problem", "another issue", "something else",
+    "actually my", "actually the",
+]
+
+CONFUSION_PHRASES = [
+    "where", "how do", "what is", "what does", "find", "locate", "?",
+    "can i find", "can you", "don't know", "dont know",
+    "not sure", "unsure", "no idea", "which", "help me",
+    "show me", "dont understand", "don't understand", "i dont understand",
+    "i don't understand", "confused", "lost", "what do you mean",
+    "unclear", "explain", "i need help", "instructions",
+]
+
+
+def interpret_response(msg: str, context: str) -> str:
+    """
+    Interprets a free-text response to a YES/NO question.
+    Returns: 'yes', 'no', 'new_issue', 'confused', 'unclear'
+    """
+    msg_lower = msg.lower().strip()
+
+    if msg_lower in ["yes", "y", "yep", "yeah", "yup", "ja", "correct", "affirmative", "fine", "ok", "okay"]:
+        return "yes"
+    if msg_lower in ["no", "n", "nope", "nah", "negative", "nee", "nada"]:
+        return "no"
+
+    if any(p in msg_lower for p in POSITIVE_PHRASES):
+        return "yes"
+    if any(p in msg_lower for p in NEGATIVE_PHRASES):
+        return "no"
+    if any(p in msg_lower for p in NEW_ISSUE_PHRASES):
+        return "new_issue"
+    if any(p in msg_lower for p in CONFUSION_PHRASES):
+        return "confused"
+
+    if not ANTHROPIC_API_KEY:
+        return "unclear"
+
+    try:
+        response = requests.post(
+            ANTHROPIC_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": ANTHROPIC_MODEL,
+                "max_tokens": 10,
+                "messages": [{
+                    "role": "user",
+                    "content": (
+                        f"Support bot asked: \"{context}\"\n"
+                        f"Customer replied: \"{msg}\"\n\n"
+                        f"Reply ONE word only: yes / no / new_issue / confused / unclear"
+                    )
+                }],
+            },
+            timeout=8,
+        )
+        result = "".join(
+            b.get("text", "") for b in response.json().get("content", [])
+        ).strip().lower().split()[0]
+        return result if result in ["yes", "no", "new_issue", "confused", "unclear"] else "unclear"
+    except Exception as e:
+        log.error(f"interpret_response error: {e}")
+        return "unclear"
+
+
+def smart_yes_no(user_id: str, state: dict, msg: str,
+                  question: str, yes_response, no_response) -> str:
+    """
+    Handles any free-text YES/NO response intelligently.
+    yes_response / no_response can be strings or callables.
+    """
+    result = interpret_response(msg, question)
+    yes_val = yes_response() if callable(yes_response) else yes_response
+    no_val  = no_response()  if callable(no_response)  else no_response
+
+    if result == "yes":
+        return yes_val
+    elif result == "no":
+        return no_val
+    elif result == "new_issue":
+        user_states[user_id] = {**state, "step": "confirm_restart"}
+        return (
+            "⚠️ It sounds like you may have a different issue.\n\n"
+            "Would you like to *start a new support request*?\n\n"
+            "Reply *YES* to start fresh or *NO* to continue with your current issue."
+        )
+    elif result == "confused":
+        return f"No problem! 😊\n\n{question}\n\nPlease reply *YES* or *NO*."
+    else:
+        retries = state.get("retries", 0) + 1
+        user_states[user_id] = {**state, "retries": retries}
+        if retries >= 2:
+            user_states[user_id] = {**state, "step": "start", "retries": 0}
+            return (
+                "I'm having a little trouble understanding — let me connect you "
+                "with a support agent who can help directly. 😊\n\n"
+                f"{AGENT_INTRO}"
+            )
+        return (
+            f"Sorry, I didn't quite catch that! 😊\n\n"
+            f"{question}\n\nPlease reply *YES* or *NO*."
+        )
+
+
+def start_escalation(user_id: str, state: dict, context_msg: str = "") -> str:
+    """
+    Routes to pre-escalation info gathering before connecting to agent.
+    Collects site name and Charger ID if not already captured.
+    context_msg: optional message to show before asking for missing info.
+    """
+    prefix = f"{context_msg}\n\n" if context_msg else ""
+    has_site      = bool(state.get("site"))
+    has_charger_id = bool(state.get("charger_id") or state.get("charger_uuid"))
+
+    if has_site and has_charger_id:
+        # Have everything — go straight to agent
+        user_states[user_id] = {**state, "step": "start"}
+        return f"{prefix}{AGENT_INTRO}"
+    elif has_site:
+        # Have site, just need Charger ID
+        user_states[user_id] = {**state, "step": "pre_escalate_charger_id"}
+        return (
+            f"{prefix}Before I connect you to an agent, I just need one more detail.\n\n"
+            "What is the *Charger ID*?\n\n"
+            "📍 The sticker is on the *front of the charger, underneath the screen.*\n\n"
+            "Please type it below."
+        )
+    else:
+        # Need both site and Charger ID
+        user_states[user_id] = {**state, "step": "pre_escalate_site"}
+        return (
+            f"{prefix}Before I connect you to an agent, I need a couple of quick details.\n\n"
+            "Which *site* are you calling from? Please type the site name."
+        )
+
+def sales_redirect_message() -> str:
+    name = SALES_INFO.get("name", "our sales team")
+    email = SALES_INFO.get("email", "")
+    phone = SALES_INFO.get("phone", "")
+    return (
+        "💼 That sounds like a great opportunity!\n\n"
+        "I'm focused on technical charger support, so for sales, new installations, "
+        "fleet solutions, or partnership enquiries, please reach out to:\n\n"
+        f"👤 *{name}*\n"
+        f"📧 {email}\n"
+        f"📞 {phone}\n\n"
+        "They'll be happy to assist you! Is there anything else I can help with today?"
+    )
+
+
+# ── Claude AI – Intent Classification & Knowledge-Grounded Q&A ───────────────
+
+AE_SYSTEM_PROMPT = f"""You are AE-Ace, the WhatsApp support assistant for Aeversa (PTY) Ltd, a South African EV fleet charge point operator.
+
+Your job is to read a customer's free-text WhatsApp message and decide what they need. You must respond with ONLY a JSON object (no other text, no markdown fences) in this exact format:
+
+{{"intent": "...", "reply": "..."}}
+
+Where "intent" is ONE of:
+- "not_charging" — ONLY use this if the vehicle is plugged in but the charging SESSION is not starting or the vehicle is not receiving charge. Do NOT use this for stuck cables, error messages, or how-to questions.
+- "charger_off" — if the charger screen is blank, off, or the unit appears to have no power
+- "slow_charging" — if a charging session IS active but the speed is slower than expected
+- "charger_fault" — if the customer says the charger is not working, broken, faulty, has a problem, or is giving issues in a general sense without specifying vehicle not charging, screen off, or slow speed
+- "agent" — if the customer explicitly wants a human agent, or has an account/complaint issue that cannot be resolved with FAQ information
+- "sales" — if the customer is asking about new charger installations, fleet expansion, partnerships, or business pricing
+- "general" — use this for ANY question that can be answered using the FAQ knowledge base below, including: how to start a session, how to stop a session, stuck cables, error messages on screen, VIN start process, red tick questions, how to register a vehicle, session reports, and any other how-to or informational question
+- "greeting" — if it is purely a greeting with no specific issue mentioned
+- "unclear" — only if you genuinely cannot determine what the customer needs after careful reading
+
+IMPORTANT ROUTING RULES:
+- "Charger is not working" / "charger is broken" / "charger has a problem" / "charger giving issues" = "charger_fault"
+- "Cable is stuck" or "cannot unplug" = "general" (answer from KB, NOT "not_charging")
+- "Error message on screen" = "general" (answer from KB, NOT "not_charging")
+- "How do I start charging" = "general" (answer from KB)
+- "How do I stop charging" = "general" (answer from KB)
+- "Red tick" questions = "general" (answer from KB)
+- "VIN" questions = "general" (answer from KB)
+- "Session not starting" or "vehicle won't charge" = "not_charging" (needs diagnostic flow)
+- "Charger screen is off/blank" = "charger_off" (needs diagnostic flow)
+- "Charging is slow" = "slow_charging" (needs diagnostic flow)
+
+If intent is "not_charging", "charger_off", or "slow_charging", set "reply" to a short one-sentence warm acknowledgment of their specific issue.
+
+If intent is "agent", set "reply" to a short one-sentence acknowledgment.
+
+If intent is "sales", set "reply" to "" (empty string).
+
+If intent is "general", set "reply" to a helpful, friendly, concise answer (2-4 sentences max) using ONLY the FAQ knowledge base below. If the knowledge base does not contain the answer, do NOT make one up — set intent to "agent" instead and reply with a short acknowledgment that you will connect them to someone who can help.
+
+If intent is "greeting" or "unclear", set "reply" to "" (empty string).
+
+Be warm, concise, and professional. Use a friendly South African tone. Never invent technical details not found in the knowledge base.
+
+─────────────────────────────
+{KB_TEXT}
+─────────────────────────────
+"""
+
+
+def ask_claude(message_text: str):
+    """Calls Claude to classify intent and optionally generate a reply.
+    Returns dict: {"intent": str, "reply": str} or None on failure."""
+    if not ANTHROPIC_API_KEY:
+        return None
+
+    try:
+        response = requests.post(
+            ANTHROPIC_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": ANTHROPIC_MODEL,
+                "max_tokens": 400,
+                "system": AE_SYSTEM_PROMPT,
+                "messages": [{"role": "user", "content": message_text}],
+            },
+            timeout=10,  # Strict 10s — Twilio cancels the whole request at 15s
+        )
+        response.raise_for_status()
+        data = response.json()
+        text = "".join(block.get("text", "") for block in data.get("content", []))
+        text = text.strip().replace("```json", "").replace("```", "").strip()
+        parsed = json.loads(text)
+        if "intent" in parsed:
+            return parsed
+        return None
+    except requests.exceptions.Timeout:
+        print("Claude API timed out — falling back to menu")
+        return None
+    except Exception as e:
+        print(f"Claude API error: {e}")
+        return None
+
+
+# ── State Machine ─────────────────────────────────────────────────────────────
+
+def handle_qr_or_image(user_id: str, state: dict,
+                        image_url: str, msg_raw: str) -> tuple[str, str | None]:
+    """Tries to decode a QR code from an image and look up the charger."""
+    qr_data = read_qr_code(image_url)
+    if qr_data:
+        charger_uuid = extract_charger_id_from_qr(qr_data)
+        if charger_uuid:
+            return lookup_charger_and_respond(user_id, state, charger_uuid)
+    # Could not decode QR — move to await_charger_id step
+    user_states[user_id] = {**state, "step": "await_charger_id"}
+    return (
+        "📷 I received your image but couldn't read the QR code. 😔\n\n"
+        "No problem! Please type the *Charger UUID* — you can find it by:\n\n"
+        "1️⃣ Go to **portal.ampcontrol.io**\n"
+        "2️⃣ Click on your charger\n"
+        "3️⃣ Go to *Settings*\n"
+        "4️⃣ Copy the *Charger UUID*\n\n"
+        "It looks like this: `6cd2389b-a278-5463-a8b2-f793603971b3`\n\n"
+        "Or try sending the QR code photo again with better lighting. 📷",
+        get_media("charger_id_northgate")
+    )
+
+
+def lookup_charger_and_respond(user_id: str, state: dict,
+                                charger_uuid: str) -> tuple[str, str | None]:
+    """
+    Looks up charger status on Ampcontrol and routes accordingly.
+    """
+    log.info(f"Looking up charger {charger_uuid} on Ampcontrol")
+    charger = get_charger_status(charger_uuid)
+
+    # Build a friendly charger name
+    raw_name = charger.get("name", "")
+    site      = state.get("site", "")
+    if raw_name and raw_name != charger_uuid[:8]:
+        friendly_name = raw_name
+    elif site:
+        friendly_name = f"{site} charger"
+    else:
+        friendly_name = f"Charger ...{charger_uuid[-6:]}"
+
+    base_state = {
+        **state,
+        "charger_uuid":  charger_uuid,
+        "charger_id":    charger_uuid,   # also store as charger_id for escalation
+        "charger_name":  friendly_name,
+    }
+
+    if charger["online"] is True:
+        user_states[user_id] = {**base_state, "step": "issue_menu"}
+        return (issue_menu(friendly_name, confirmed_online=True), None)
+
+    elif charger["online"] is False:
+        user_states[user_id] = {**base_state,
+                                  "step": "start",
+                                  "fault_type": "Charger offline"}
+        return (f"{offline_message(friendly_name)}{AGENT_INTRO}", None)
+
+    else:
+        # Ampcontrol unavailable — fall back to manual diagnostic flow
+        # NEVER attempt restart when we can't reach Ampcontrol
+        user_states[user_id] = {**base_state, "step": "manual_issue_menu"}
+        log.warning("Ampcontrol unavailable — falling back to manual diagnostic flow")
+        return (
+            "⚠️ I couldn't check your charger's live status right now.\n\n"
+            "I'll guide you through some manual troubleshooting steps.\n\n"
+            "What issue are you experiencing?\n\n"
+            "🔴 *1* – My vehicle is not charging\n"
+            "🐢 *2* – The charging speed is slow\n"
+            "❓ *3* – Something else\n"
+            "👤 *4* – Speak to a support agent",
+            None
+        )
+
+
+def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received_media: str = "") -> tuple[str, str | None]:
+    msg = msg_raw.strip().lower()
+    state = user_states.get(user_id, {"step": "start"})
+    step = state.get("step", "start")
+
+    # ── Global Commands — these work from ANY step ────────────────────────────
+    # Greetings always reset the conversation regardless of current state
+    if msg in ["menu", "start", "hi", "hello", "hey", "hiya", "howzit",
+               "good morning", "good afternoon", "good evening", "good day"]:
+        user_states[user_id] = {"step": "start"}
+        return GREETING
+
+    # Agent request works from any step
+    if msg in ["agent", "human", "person", "speak to someone", "4"]:
+        return start_escalation(user_id, state)
+
+    # Sales request works from any step
+    if msg in ["sales", "sales rep", "sales agent"]:
+        user_states[user_id] = {"step": "start"}
+        return sales_redirect_message()
+
+    # ── Confirm restart step ──────────────────────────────────────────────────
+    if step == "confirm_restart":
+        if msg in ["yes", "y", "yeah", "yep"]:
+            user_states[user_id] = {"step": "start"}
+            return GREETING
+        elif msg in ["no", "n", "nope"]:
+            # Restore previous step
+            prev_step = state.get("prev_step", "start")
+            user_states[user_id] = {**state, "step": prev_step}
+            return (
+                "No problem! Let's continue where we left off.\n\n"
+                "Please reply *YES* or *NO* to my previous question, "
+                "or type *MENU* to start a new request."
+            )
+        else:
+            return (
+                "Would you like to start a new support request?\n\n"
+                "Reply *YES* to start fresh or *NO* to continue."
+            )
+
+    # ── Mid-flow new issue detection ──────────────────────────────────────────
+    # If customer is mid-flow and clearly describes a completely new issue,
+    # offer to restart — but only for steps that expect YES/NO answers
+    YES_NO_STEPS = [
+        "opt1_key_removed", "opt1_replug_fixed", "opt1_removed_key_try",
+        "opt1_error_check", "opt1_try_another_charger", "opt1_other_charger_working",
+        "opt2_power_on_site", "opt2_another_charger", "opt2_other_charger_works",
+        "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_after_wait",
+        "opt3_wattspot_replug", "opt3_other_final_restart",
+    ]
+    if step in YES_NO_STEPS and any(p in msg for p in NEW_ISSUE_PHRASES):
+        user_states[user_id] = {**state, "step": "confirm_restart", "prev_step": step}
+        return (
+            "⚠️ It sounds like you may have a different issue.\n\n"
+            "Would you like to *start a new support request*?\n\n"
+            "Reply *YES* to start fresh or *NO* to continue with your current issue."
+        )
+
+    # ── MENU / START STEP ─────────────────────────────────────────────────────
+    if step == "start":
+
+        # ── QR code or image sent ─────────────────────────────────────────────
+        if has_media and received_media:
+            return handle_qr_or_image(user_id, state, received_media, msg_raw)
+
+        # ── Agent / Sales shortcuts ───────────────────────────────────────────
+        if msg == "4":
+            return start_escalation(user_id, state)
+
+        # ── Direct error code lookup ──────────────────────────────────────────
+        extracted_code = extract_error_code(msg.strip())
+        if extracted_code:
+            error = lookup_error_code(extracted_code)
+            if error:
+                user_states[user_id] = {"step": "start"}
+                return error_code_response(error)
+
+        # ── If customer types/pastes UUID or Ampcontrol URL ───────────────────
+        charger_uuid = extract_uuid_from_text(msg_raw)
+        if charger_uuid:
+            return lookup_charger_and_respond(user_id, state, charger_uuid)
+
+        # ── Free text — ask Claude to understand intent ───────────────────────
+        ai_result = ask_claude(msg_raw)
+
+        if ai_result is None:
+            return GREETING
+
+        intent  = ai_result.get("intent", "unclear")
+        ai_reply = ai_result.get("reply", "")
+
+        # Any charging issue → ask for QR code first
+        if intent in ["not_charging", "charger_off", "slow_charging", "charger_fault"]:
+            prefix = f"{ai_reply}\n\n" if ai_reply else ""
+            user_states[user_id] = {**state, "fault_hint": intent}
+            return (
+                f"{prefix}To help you quickly, please *scan the QR code* on the "
+                "charger and send me the image. 📷\n\n"
+                "I will check your charger's status immediately!\n\n"
+                "💡 _Can't find the QR code? Send me the Ampcontrol link or type the Charger UUID._"
+            )
+        elif intent == "agent":
+            return start_escalation(user_id, state, ai_reply)
+        elif intent == "sales":
+            user_states[user_id] = {"step": "start"}
+            return sales_redirect_message()
+        elif intent == "general":
+            user_states[user_id] = {"step": "start"}
+            return f"{ai_reply}\n\nIs there anything else I can help with? Type *MENU* to start."
+        elif intent == "greeting":
+            user_states[user_id] = {"step": "start"}
+            return GREETING
+        else:
+            return GREETING
+
+    # ── Waiting for QR code ───────────────────────────────────────────────────
+    if step == "await_qr":
+        if has_media and received_media:
+            return handle_qr_or_image(user_id, state, received_media, msg_raw)
+        charger_uuid = extract_uuid_from_text(msg_raw)
+        if charger_uuid:
+            return lookup_charger_and_respond(user_id, state, charger_uuid)
+        return (
+            "Please send me the *QR code image* from your charger 📷\n\n"
+            "Or paste the *Ampcontrol link* or *Charger UUID* from the portal."
+        )
+
+    # ── Waiting for Charger UUID after QR failed ──────────────────────────────
+    if step == "await_charger_id":
+        if has_media and received_media:
+            return handle_qr_or_image(user_id, state, received_media, msg_raw)
+        charger_uuid = extract_uuid_from_text(msg_raw)
+        if charger_uuid:
+            return lookup_charger_and_respond(user_id, state, charger_uuid)
+        # Customer typed something that isn't a UUID or URL — explain clearly
+        return (
+            "Thanks for that — but I need the *Charger UUID* or the *Ampcontrol link*. 😊\n\n"
+            "The easiest way:\n"
+            "📎 Copy and paste the link from your browser when viewing the charger:\n"
+            "`https://portal.ampcontrol.io/#/charger/...uuid.../overview`\n\n"
+            "Or type *AGENT* to speak to someone directly. 😊"
+        )
+
+    # ── Manual issue menu — used when Ampcontrol is unavailable ──────────────
+    if step == "manual_issue_menu":
+        charger_uuid = state.get("charger_uuid", "")
+        if msg == "1":
+            user_states[user_id] = {**state, "step": "opt1_key_removed",
+                                     "fault_type": "Vehicle not charging"}
+            return (
+                "🔴 *Vehicle Not Charging*\n\n"
+                "Let's get this sorted! First things first:\n\n"
+                "Is your vehicle switched off and the key removed from the ignition?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "2":
+            user_states[user_id] = {**state, "step": "opt3_restart_session",
+                                     "fault_type": "Slow charging"}
+            return (
+                "🐢 *Slow Charging*\n\n"
+                "Let's get your speed up! ⚡\n\n"
+                "Can you stop the charging session and start it again?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "3":
+            user_states[user_id] = {**state, "step": "something_else",
+                                     "fault_type": "Other issue"}
+            return "Please describe the issue you are experiencing and I will get our support team to help. 📋"
+        elif msg == "4":
+            return start_escalation(user_id, state)
+        else:
+            return (
+                "What issue are you experiencing?\n\n"
+                "🔴 *1* – My vehicle is not charging\n"
+                "🐢 *2* – The charging speed is slow\n"
+                "❓ *3* – Something else\n"
+                "👤 *4* – Speak to a support agent"
+            )
+
+    # ── Issue menu — shown after charger confirmed online ─────────────────────
+    if step == "issue_menu":
+        charger_name = state.get("charger_name", "your charger")
+        charger_uuid = state.get("charger_uuid", "")
+
+        if msg == "1":
+            # Vehicle not charging — restart charger and ask to replug
+            user_states[user_id] = {**state, "step": "await_restart_result",
+                                     "fault_type": "Vehicle not charging"}
+            threading.Thread(
+                target=lambda: restart_charger(charger_uuid), daemon=True
+            ).start()
+            return (
+                restart_message(charger_name),
+                get_media("cable_plugin")
+            )
+        elif msg == "2":
+            # Slow charging — restart and ask to re-check
+            user_states[user_id] = {**state, "step": "await_slow_restart_result",
+                                     "fault_type": "Slow charging"}
+            threading.Thread(
+                target=lambda: restart_charger(charger_uuid), daemon=True
+            ).start()
+            return (
+                f"🔄 I am restarting *Charger {charger_name}* remotely to reset the session...\n\n"
+                "Please *stop your current session*, wait *2 minutes*, "
+                "then start a new session.\n\n"
+                "Is the charging speed better now?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "3":
+            user_states[user_id] = {**state, "step": "something_else",
+                                     "fault_type": "Other issue"}
+            return (
+                "Please describe the issue you are experiencing and I will "
+                "make sure our support team has all the details. 📋"
+            )
+        elif msg == "4":
+            return start_escalation(user_id, state)
+        else:
+            return issue_menu(charger_name)
+
+    # ── After remote restart — vehicle not charging ───────────────────────────
+    if step == "await_restart_result":
+        # Ignore images at this step — just re-ask the question
+        if has_media and not msg_raw.strip():
+            return ("Is your vehicle now charging after the restart?\n\nReply *YES* or *NO*", None)
+        charger_name = state.get("charger_name", "your charger")
+        QUESTION = "Is your vehicle now charging?"
+        def yes_fn():
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        def no_fn():
+            return start_escalation(user_id, state,
+                f"I'm sorry the restart didn't resolve the issue. 😔\n\n"
+                f"Our support team will take over from here.")
+        if msg == "yes":
+            return yes_fn()
+        elif msg == "no":
+            return no_fn()
+        else:
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
+
+    # ── After remote restart — slow charging ──────────────────────────────────
+    if step == "await_slow_restart_result":
+        charger_name = state.get("charger_name", "your charger")
+        QUESTION = "Is the charging speed better now?"
+        def yes_fn():
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        def no_fn():
+            return start_escalation(user_id, state,
+                "I'm sorry the restart didn't improve the speed. 😔\n\n"
+                "Our support team will investigate further.")
+        if msg == "yes":
+            return yes_fn()
+        elif msg == "no":
+            return no_fn()
+        else:
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
+
+    # ── Something else ────────────────────────────────────────────────────────
+    if step == "something_else":
+        description = msg_raw.strip()
+        user_states[user_id] = {**state, "step": "start",
+                                  "extra_notes": description}
+        return start_escalation(user_id, state,
+            f"Thank you for describing the issue. I have noted: *\"{description}\"*\n\n"
+            "Let me connect you with a support agent who can help.")
+
+
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # OPTION 1 – VEHICLE NOT CHARGING
+    # ══════════════════════════════════════════════════════════════════════════
+
+    if step == "opt1_key_removed":
+        if msg == "yes":
+            user_states[user_id] = {**state, "step": "opt1_replug_fixed"}
+            return (
+                "✅ Good.\n\n"
+                "Please *unplug the charging cable*, wait 5 seconds and plug it back in firmly into the vehicle. Please see the video below.\n\n"
+                "Has this fixed the issue? Is your vehicle now charging?\n\n"
+                "Reply *YES* or *NO*",
+                get_media("cable_plugin")
+            )
+        elif msg == "no":
+            user_states[user_id] = {**state, "step": "opt1_removed_key_try"}
+            return (
+                "No problem!\n\n"
+                "Please *remove the key from the ignition*, make sure the vehicle is switched off, "
+                "and then try to charge again.\n\n"
+                "Is your vehicle now charging?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is your vehicle switched off and key removed from the ignition?"
+
+    if step == "opt1_replug_fixed":
+        QUESTION = "Has this fixed the issue? Is your vehicle now charging?"
+        if msg == "yes":
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        elif msg == "no":
+            user_states[user_id] = {**state, "step": "opt1_error_check", "retries": 0}
+            return (
+                "Sorry to hear that. 😔\n\n"
+                "Is there an *error message* on the charger screen?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        else:
+            def yes_fn():
+                user_states[user_id] = {"step": "start"}
+                return GREAT_NEWS
+            def no_fn():
+                user_states[user_id] = {**state, "step": "opt1_error_check", "retries": 0}
+                return "Sorry to hear that. 😔\n\nIs there an *error message* on the charger screen?\n\nReply *YES* or *NO*"
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
+
+    if step == "opt1_removed_key_try":
+        QUESTION = "Is your vehicle now charging?"
+        if msg == "yes":
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        elif msg == "no":
+            user_states[user_id] = {**state, "step": "opt1_error_check", "retries": 0}
+            return "Sorry to hear that. 😔\n\nIs there an *error message* on the charger screen?\n\nReply *YES* or *NO*"
+        else:
+            def yes_fn():
+                user_states[user_id] = {"step": "start"}
+                return GREAT_NEWS
+            def no_fn():
+                user_states[user_id] = {**state, "step": "opt1_error_check", "retries": 0}
+                return "Sorry to hear that. 😔\n\nIs there an *error message* on the charger screen?\n\nReply *YES* or *NO*"
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
+
+    if step == "opt1_error_check":
+        if msg == "yes":
+            user_states[user_id] = {**state, "step": "opt1_error_detail"}
+            return (
+                "📋 What does the *error message* say?\n\n"
+                "Please type the error message exactly as it appears on the screen."
+            )
+        elif msg == "no":
+            user_states[user_id] = {**state, "step": "opt1_try_another_charger"}
+            return (
+                "No error message — understood.\n\n"
+                "Is there *another charger* available at this location that you could try?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is there an error message on the charger screen?"
+
+    if step == "opt1_error_detail":
+        error_msg = msg_raw.strip()
+        # Store error code in state for email notification
+        state["error_code"] = error_msg
+        user_states[user_id] = {**state, "step": "start"}
+        # Try to extract and match a known error code (handles "76", "error 76", "error code 76")
+        extracted = extract_error_code(error_msg)
+        error = lookup_error_code(extracted) if extracted else lookup_error_code(error_msg)
+        if error:
+            return error_code_response(error)
+        # Unknown error code — log and escalate
+        return start_escalation(user_id, state,
+            f"Thank you for that information. I have logged the error: *\"{error_msg}\"*")
+
+    if step == "opt1_try_another_charger":
+        if msg == "yes":
+            user_states[user_id] = {**state, "step": "opt1_other_charger_working"}
+            return (
+                "Great! Please try the other charger and let us know:\n\n"
+                "Is your vehicle now charging on the other charger?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "no":
+            return start_escalation(user_id, state,
+                "No problem, we will get an agent to assist you right away.")
+        else:
+            return "Please reply *YES* or *NO*. Is there another charger available at this location?"
+
+    if step == "opt1_other_charger_working":
+        QUESTION = "Is your vehicle now charging on the other charger?"
+        if msg == "yes":
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        elif msg == "no":
+            user_states[user_id] = {**state, "step": "opt1_site_name"}
+            return "I'm sorry to hear that. 😔\n\nWhich *site* are you calling from? Please type the site name."
+        else:
+            def yes_fn():
+                user_states[user_id] = {"step": "start"}
+                return GREAT_NEWS
+            def no_fn():
+                user_states[user_id] = {**state, "step": "opt1_site_name"}
+                return "I'm sorry to hear that. 😔\n\nWhich *site* are you calling from? Please type the site name."
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
+
+    if step == "opt1_site_name":
+        site = msg_raw.strip()
+        updated_state = {**state, "site": site}
+        user_states[user_id] = updated_state
+        return start_escalation(user_id, updated_state)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # OPTION 2 – CHARGER IS OFF
+    # ══════════════════════════════════════════════════════════════════════════
+
+    if step == "opt2_power_on_site":
+        if msg == "yes":
+            user_states[user_id] = {**state, "step": "opt2_another_charger"}
+            return (
+                "Okay, there is power on site. 🔍\n\n"
+                "📸 *Please send a photo of the charger screen* so we can see what is displayed.\n\n"
+                "Is there *another charger* available on site?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "no":
+            user_states[user_id] = {**state, "step": "opt2_no_power_site_name"}
+            return (
+                "It seems there may be a power outage on site. ⚠️\n\n"
+                "📸 *Please send a photo of the charger screen* so we can confirm.\n\n"
+                "Which *site* are you calling from? Please type the site name."
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is there power on site?"
+
+    if step == "opt2_another_charger":
+        # If customer sent a photo, acknowledge it first
+        if has_media and not msg:
+            return (
+                "📸 *Thank you, we have received your photo!*\n\n"
+                "Is there *another charger* available on site?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        # If photo sent with a caption like "yes" or "no", treat caption as answer
+        if has_media and msg:
+            pass  # falls through to YES/NO handling below
+        if msg == "yes":
+            user_states[user_id] = {**state, "step": "opt2_other_charger_works"}
+            return (
+                "Great! Please try the other charger.\n\n"
+                "📸 *Please also send a photo of that charger screen.*\n\n"
+                "Is the other charger working?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "no":
+            user_states[user_id] = {**state, "step": "opt2_site_name_escalate"}
+            return (
+                "Understood, no other charger available.\n\n"
+                "Which *site* are you calling from? Please type the site name."
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is there another charger available on site?"
+
+    if step == "opt2_other_charger_works":
+        if has_media and not msg:
+            return (
+                "📸 *Thank you, we have received your photo!*\n\n"
+                "Is the other charger working?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        if msg == "yes":
+            user_states[user_id] = {"step": "start"}
+            return (
+                "🎉 *Great, glad we got you sorted!*\n\n"
+                "We will log a fault on the affected unit and have it investigated. ⚡\n\n"
+                "Type *MENU* if you need anything else."
+            )
+        elif msg == "no":
+            user_states[user_id] = {**state, "step": "opt2_site_name_escalate"}
+            return (
+                "Sorry to hear that. 😔\n\n"
+                "Which *site* are you calling from? Please type the site name."
+            )
+        else:
+            return "Please reply *YES* or *NO*. Is the other charger working?"
+
+    if step in ["opt2_site_name_escalate", "opt2_no_power_site_name"]:
+        site = msg_raw.strip()
+        updated_state = {**state, "site": site}
+        user_states[user_id] = updated_state
+        return start_escalation(user_id, updated_state)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # OPTION 3 – SLOW CHARGING
+    # ══════════════════════════════════════════════════════════════════════════
+
+    if step == "opt3_restart_session":
+        if msg == "yes":
+            user_states[user_id] = {**state, "step": "opt3_still_slow"}
+            return (
+                "Great! Please stop the session and start it again.\n\n"
+                "🎥 Watch the short video below if you need help stopping the session.\n\n"
+                "Is the charging speed *still slow* after restarting?\n\n"
+                "Reply *YES* or *NO*",
+                get_media("video_how_to_stop")
+            )
+        elif msg == "no":
+            user_states[user_id] = {**state, "step": "opt3_still_slow"}
+            return (
+                "No problem.\n\n"
+                "Is the charging speed *still slow*?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        else:
+            # Check if customer is saying it's now working
+            positive_phrases = ["charging now", "its charging", "it's charging", "working now",
+                                 "it works", "its working", "it's working", "working", "sorted",
+                                 "fixed", "resolved", "charging fine", "all good", "good now"]
+            if any(phrase in msg for phrase in positive_phrases):
+                user_states[user_id] = {"step": "start"}
+                return GREAT_NEWS
+            return "Please reply *YES* or *NO*. Can you stop the charging session and start it again?"
+
+    if step == "opt3_still_slow":
+        QUESTION = "Is the charging speed still slow?"
+        if msg == "no":
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        elif msg == "yes":
+            user_states[user_id] = {**state, "step": "opt3_which_site"}
+            return "Let's dig deeper. 🔍\n\nWhich *site* are you calling from?\n\nReply *1* for Wattspot or *2* for Other"
+        else:
+            positive_phrases = ["charging now", "its charging", "it's charging", "working now",
+                                 "it works", "its working", "it's working", "working", "sorted",
+                                 "fixed", "resolved", "charging fine", "all good", "good now",
+                                 "faster now", "speed is fine", "normal now"]
+            if any(phrase in msg for phrase in positive_phrases):
+                user_states[user_id] = {"step": "start"}
+                return GREAT_NEWS
+            def yes_fn():
+                user_states[user_id] = {**state, "step": "opt3_which_site"}
+                return "Let's dig deeper. 🔍\n\nWhich *site* are you calling from?\n\nReply *1* for Wattspot or *2* for Other"
+            def no_fn():
+                user_states[user_id] = {"step": "start"}
+                return GREAT_NEWS
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, no_fn, yes_fn)
+
+    if step == "opt3_which_site":
+        if msg in ["1", "wattspot"]:
+            user_states[user_id] = {**state, "step": "opt3_wattspot_wifi"}
+            return (
+                "📍 *Wattspot Site*\n\n"
+                "Please check the *WiFi symbol at the top of the charger.*\n\n"
+                "Is the WiFi symbol *White* or *Red*?\n\n"
+                "Reply *WHITE* or *RED*",
+                get_media("wifi_symbol_wattspot")
+            )
+        elif msg in ["2", "other"]:
+            user_states[user_id] = {**state, "step": "opt3_other_4g"}
+            return (
+                "📍 *Other Site*\n\n"
+                "Please check the *bottom left of the charger screen.*\n\n"
+                "📸 Please send a photo of the charger screen.\n\n"
+                "What do you see?\n\n"
+                "Reply:\n"
+                "*1* – 4G symbol is greyed out\n"
+                "*2* – There is a red cross on a symbol\n"
+                "*3* – Everything looks normal",
+                get_media("4g_symbol_other")
+            )
+        else:
+            return "Please reply *1* for Wattspot or *2* for Other."
+
+    # ── Wattspot Flow ─────────────────────────────────────────────────────────
+
+    if step == "opt3_wattspot_wifi":
+        if has_media and not msg:
+            return (
+                "Is the WiFi symbol at the top of the charger *White* or *Red*?\n\n"
+                "Reply *WHITE* or *RED*"
+            )
+        if msg == "white":
+            user_states[user_id] = {**state, "step": "opt3_wattspot_replug"}
+            return (
+                "✅ The charger is *online* (WiFi is white).\n\n"
+                "Please *unplug the charging cable* from the vehicle, "
+                "wait 30 seconds, and plug it back in firmly.\n\n"
+                "Is your vehicle now charging?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "red":
+            return start_escalation(user_id, state,
+                "🔴 The charger is *offline* (WiFi is red).\n\nOur support team will investigate this unit immediately.")
+        else:
+            return "Please reply *WHITE* or *RED*. What colour is the WiFi symbol on the charger?"
+
+    if step == "opt3_wattspot_replug":
+        if msg == "yes":
+            user_states[user_id] = {**state, "step": "start"}
+            return GREAT_NEWS
+        elif msg == "no":
+            return start_escalation(user_id, state,
+                "I'm sorry the issue persists. 😔\n\nOur support team will investigate further.")
+        else:
+            return "Please reply *YES* or *NO*. Is your vehicle now charging?"
+
+    # ── Other Site Flow ───────────────────────────────────────────────────────
+
+    if step == "opt3_other_4g":
+        if has_media and not msg:
+            return (
+                "📸 *Thank you, we have received your photo!*\n\n"
+                "What do you see at the bottom left of the charger screen?\n\n"
+                "Reply:\n"
+                "*1* – 4G symbol is greyed out\n"
+                "*2* – There is a red cross on a symbol\n"
+                "*3* – Everything looks normal"
+            )
+        if msg == "1":
+            return start_escalation(user_id, state,
+                "⚠️ The *4G symbol is greyed out* — the charger is offline.\n\nPlease wait while we investigate.")
+        elif msg == "2":
+            return start_escalation(user_id, state,
+                "⚠️ A *red cross* on the symbol indicates the charger is offline.")
+        elif msg == "3":
+            user_states[user_id] = {**state, "step": "opt3_other_final_restart"}
+            return (
+                "✅ The charger appears connected.\n\n"
+                "Please *restart the charging session* now.\n\n"
+                "Is the charging speed still slow after restarting?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        else:
+            return (
+                "Please reply:\n"
+                "*1* – 4G symbol is greyed out\n"
+                "*2* – There is a red cross on a symbol\n"
+                "*3* – Everything looks normal"
+            )
+
+    if step == "opt3_other_final_restart":
+        if msg == "no":
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        elif msg == "yes":
+            return start_escalation(user_id, state,
+                "We are sorry the issue persists. 😔")
+        else:
+            return "Please reply *YES* or *NO*. Is the charging speed still slow after restarting?"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # CHARGER FAULT — gather site and charger ID then escalate
+    # ══════════════════════════════════════════════════════════════════════════
+
+    if step == "charger_fault_site":
+        site = msg_raw.strip()
+        site_lower = site.lower()
+        user_states[user_id] = {**state, "step": "charger_fault_id",
+                                 "site": site, "fault_type": "Charger not working"}
+
+        # Give charger-type-specific instructions with matching image
+        wattspot_sites = ["northgate", "fourways", "wynberg"]
+        if any(s in site_lower for s in wattspot_sites):
+            charger_id_hint = (
+                "📍 The Charger ID sticker is on the *front of the charger, "
+                "underneath the screen*. Please see the image below for reference."
+            )
+            media_key = "charger_id_northgate"
+        else:
+            charger_id_hint = (
+                "📍 The Charger ID sticker is on the *front of the charger, "
+                "underneath the screen*. Please see the image below for reference."
+            )
+            media_key = "charger_id_other"
+
+        return (
+            f"Thank you — noted that you are at *{site}*.\n\n"
+            f"Which *charger* are you having issues with?\n\n"
+            f"{charger_id_hint}\n\n"
+            f"Please type the *Charger ID* once you have it.",
+            get_media(media_key)
+        )
+
+    if step == "charger_fault_id":
+        # ── QR Code Detection ─────────────────────────────────────────────────
+        if has_media and received_media:
+            log.info(f"📷 QR image received in charger fault ID step")
+            qr_data = read_qr_code(received_media)
+            if qr_data:
+                charger_id = extract_charger_id_from_qr(qr_data)
+                if charger_id:
+                    site = state.get("site", "Unknown site")
+                    user_states[user_id] = {**state, "step": "start", "charger_id": charger_id}
+                    return (
+                        f"✅ *QR code scanned successfully!*\n\n"
+                        f"I have identified your charger:\n\n"
+                        f"📍 *Site:* {site}\n"
+                        f"🔌 *Charger ID:* `{charger_id}`\n\n"
+                        f"Our support team will investigate immediately.\n\n"
+                        f"{AGENT_INTRO}"
+                    )
+            return (
+                "📷 I received your image but couldn't read a QR code from it.\n\n"
+                "Please type the *Charger ID* manually.\n\n"
+                "📍 The sticker is on the *front of the charger, underneath the screen.*",
+                get_media("charger_id_northgate")
+            )
+        charger_id = msg_raw.strip()
+        site = state.get("site", "Unknown site")
+        user_states[user_id] = {**state, "step": "start", "charger_id": charger_id}
+        return (
+            f"Thank you. I have logged the following fault:\n\n"
+            f"📍 *Site:* {site}\n"
+            f"🔌 *Charger ID:* {charger_id}\n\n"
+            f"Our support team will investigate immediately.\n\n"
+            f"{AGENT_INTRO}"
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PRE-ESCALATION — collect site and charger ID before connecting agent
+    # ══════════════════════════════════════════════════════════════════════════
+
+    if step == "pre_escalate_site":
+        site = msg_raw.strip()
+        user_states[user_id] = {**state, "step": "pre_escalate_charger_id", "site": site}
+        return (
+            f"Thank you — noted that you are at *{site}*.\n\n"
+            "What is the *Charger ID*?\n\n"
+            "📍 The sticker is on the *front of the charger, underneath the screen.*\n\n"
+            "Please type it below.",
+            get_media("charger_id_northgate")
+        )
+
+    if step == "pre_escalate_charger_id":
+        # ── QR Code Detection ─────────────────────────────────────────────────
+        if has_media and received_media:
+            log.info(f"📷 Image received in charger ID step — attempting QR decode")
+            qr_data = read_qr_code(received_media)
+            if qr_data:
+                charger_id = extract_charger_id_from_qr(qr_data)
+                if charger_id:
+                    site       = state.get("site", "Not provided")
+                    fault_type = state.get("fault_type", "Not specified")
+                    error_code = state.get("error_code", "")
+                    user_states[user_id] = {**state, "step": "start", "charger_id": charger_id}
+                    error_line = f"🔴 *Error Code:* {error_code}\n" if error_code else ""
+                    return (
+                        f"✅ *QR code scanned successfully!*\n\n"
+                        f"I have identified your charger:\n\n"
+                        f"📍 *Site:* {site}\n"
+                        f"🔌 *Charger ID:* `{charger_id}`\n"
+                        f"⚠️ *Fault:* {fault_type}\n"
+                        f"{error_line}\n"
+                        f"Connecting you to our support team now.\n\n"
+                        f"{AGENT_INTRO}"
+                    )
+            # QR decode failed — ask them to type it instead
+            return (
+                "📷 I received your image but couldn't read a QR code from it.\n\n"
+                "Please type the *Charger ID* manually.\n\n"
+                "📍 The sticker is on the *front of the charger, underneath the screen.*",
+                get_media("charger_id_northgate")
+            )
+
+        # ── Question/confusion detection ──────────────────────────────────────
+        if any(phrase in msg for phrase in CONFUSION_PHRASES):
+            return (
+                "📍 The *Charger ID* sticker is on the *front of the charger, "
+                "underneath the screen.*\n\n"
+                "It is a combination of letters and numbers — for example *CPO-001* "
+                "or *AE-12345*.\n\n"
+                "💡 *Tip:* You can also scan the *QR code* on the charger and send "
+                "me the image — I'll read it automatically! 📷\n\n"
+                "Please type the Charger ID or send the QR code image. 😊",
+                get_media("charger_id_northgate")
+            )
+
+        charger_id = msg_raw.strip()
+        site       = state.get("site", "Not provided")
+        fault_type = state.get("fault_type", "Not specified")
+        error_code = state.get("error_code", "")
+        user_states[user_id] = {**state, "step": "start", "charger_id": charger_id}
+        error_line = f"🔴 *Error Code:* {error_code}\n" if error_code else ""
+        return (
+            f"Thank you. I have logged the following details:\n\n"
+            f"📍 *Site:* {site}\n"
+            f"🔌 *Charger ID:* {charger_id}\n"
+            f"⚠️ *Fault:* {fault_type}\n"
+            f"{error_line}\n"
+            f"Connecting you to our support team now.\n\n"
+            f"{AGENT_INTRO}"
+        )
+
+    # ── Default Fallback ──────────────────────────────────────────────────────
+    return FALLBACK
+
+
+# ── Media File Server ─────────────────────────────────────────────────────────
+import mimetypes
+from pathlib import Path
+
+MEDIA_DIR = Path(__file__).parent / "media"
+
+@app.route("/media/<path:filename>")
+def serve_media(filename):
+    """Serves media files directly from the media folder."""
+    file_path = MEDIA_DIR / filename
+    if not file_path.exists():
+        log.warning(f"Media file not found: {filename}")
+        return "File not found", 404
+    mime_type, _ = mimetypes.guess_type(str(file_path))
+    mime_type = mime_type or "application/octet-stream"
+    log.info(f"Serving media: {filename} ({mime_type})")
+    with open(file_path, "rb") as f:
+        from flask import Response
+        return Response(f.read(), mimetype=mime_type)
+
+
+# ── Webhook ───────────────────────────────────────────────────────────────────
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    incoming        = request.form.get("Body", "").strip()
+    sender          = request.form.get("From", "unknown")
+    num_media       = int(request.form.get("NumMedia", "0"))
+    has_media       = num_media > 0
+    received_media  = request.form.get("MediaUrl0", "") if has_media else ""
+
+    # ── Agent command handling ────────────────────────────────────────────────
+    if sender in AGENT_NUMBERS:
+        log.info(f"Agent command from {AGENT_NUMBERS[sender]}: {incoming}")
+        response_text = handle_agent_command(sender, incoming)
+        resp = MessagingResponse()
+        resp.message(response_text)
+        return str(resp)
+
+    # ── Paused customer — bot stays silent ───────────────────────────────────
+    if is_paused(sender):
+        log.info(f"Bot paused for {sender} — message ignored")
+        return str(MessagingResponse())  # Empty response — bot stays silent
+
+    # ── Normal customer flow ──────────────────────────────────────────────────
+    result = handle_message(sender, incoming, has_media=has_media, received_media=received_media)
+
+    if isinstance(result, tuple):
+        response_text, media_url = result
+    else:
+        response_text, media_url = result, None
+
+    # ── Escalation detected — notify agents ──────────────────────────────────
+    if "Connecting you to a support agent" in response_text:
+        state = user_states.get(sender, {})
+        # Send email notification
+        send_escalation_email(
+            customer_number = sender.replace("whatsapp:", ""),
+            fault_type      = state.get("fault_type", "Not specified"),
+            site            = state.get("site"),
+            charger_id      = state.get("charger_id") or state.get("charger_uuid"),
+            error_code      = state.get("error_code"),
+            extra_notes     = state.get("extra_notes")
+        )
+        # Send WhatsApp notification to all agents
+        notify_agents(sender, state)
+
+    # ── Build TwiML response ──────────────────────────────────────────────────
+    resp = MessagingResponse()
+    if media_url:
+        resp.message(response_text)
+        is_video = media_url.lower().endswith((".mp4", ".mp4.mp4", ".mov"))
+        caption  = "📹 *Guide video*" if is_video else "📸 *Reference image*"
+        media_msg = resp.message(caption)
+        media_msg.media(media_url)
+        log.info(f"📎 Sending {'video' if is_video else 'image'}: {media_url}")
+    else:
+        resp.message(response_text)
+
+    return str(resp)
+
+
+@app.route("/", methods=["GET"])
+def health_check():
+    ai_status     = "configured" if ANTHROPIC_API_KEY else "NOT configured"
+    email_status  = "configured" if RESEND_API_KEY else "NOT configured"
+    twilio_status = "configured" if TWILIO_ACCOUNT_SID else "NOT configured"
+    kb_count      = len(KNOWLEDGE_BASE.get("faqs", []))
+    agent_count   = len(AGENT_NUMBERS)
+    paused_count  = len(paused_customers)
+    return (
+        f"AE-Ace Bot is running ✅\n"
+        f"Claude AI: {ai_status} | Email: {email_status} | "
+        f"Twilio Agents: {twilio_status} | KB: {kb_count} FAQs | "
+        f"Agents: {agent_count} | Paused customers: {paused_count}"
+    )
+
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)lio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
