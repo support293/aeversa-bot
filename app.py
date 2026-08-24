@@ -441,8 +441,7 @@ def ampcontrol_post(endpoint: str, payload: dict) -> dict | None:
 def get_charger_status(charger_uuid: str) -> dict:
     """
     Fetches charger details from Ampcontrol.
-    Tries direct UUID lookup first, then falls back to list search.
-    Returns dict with: online (bool|None), name (str), status (str), raw (dict)
+    Endpoint: GET /v2/charge_points/{uuid}/
     """
     def parse_charger(charger: dict) -> dict:
         online_status = charger.get("onlineStatus", "").upper()
@@ -450,7 +449,7 @@ def get_charger_status(charger_uuid: str) -> dict:
         name          = (charger.get("customName") or
                          charger.get("name") or
                          charger.get("ocppId") or
-                         charger_uuid[-6:])
+                         f"Charger ...{charger_uuid[-6:]}")
         is_online = online_status == "ONLINE"
         log.info(f"Charger '{name}' → onlineStatus={online_status} ocppStatus={ocpp_status}")
         return {
@@ -461,33 +460,30 @@ def get_charger_status(charger_uuid: str) -> dict:
             "raw":    charger
         }
 
-    # Attempt 1: Direct UUID lookup
-    data = ampcontrol_get(f"/chargepoints/{charger_uuid}/")
+    # Attempt 1: Direct UUID lookup (correct endpoint with underscore)
+    data = ampcontrol_get(f"/charge_points/{charger_uuid}/")
     if data and data.get("data"):
         return parse_charger(data["data"][0])
 
-    log.warning(f"Direct charger lookup failed — trying list search for {charger_uuid}")
+    log.warning(f"Direct lookup failed — trying list search for {charger_uuid}")
 
-    # Attempt 2: List all chargepoints and find by UUID
-    list_data = ampcontrol_get(f"/chargepoints/?search={charger_uuid}")
+    # Attempt 2: List and filter
+    list_data = ampcontrol_get(f"/charge_points/?search={charger_uuid}")
     if list_data and list_data.get("data"):
         for charger in list_data["data"]:
             if charger.get("id", "").lower() == charger_uuid.lower():
                 return parse_charger(charger)
-        # If not found by exact match, return first result
-        if list_data["data"]:
-            return parse_charger(list_data["data"][0])
 
-    # Attempt 3: List all chargepoints (no filter) — log how many we can see
-    all_data = ampcontrol_get("/chargepoints/")
+    # Attempt 3: List all and log count for debugging
+    all_data = ampcontrol_get("/charge_points/")
     if all_data:
         count = all_data.get("total", 0)
-        log.warning(f"Service account can see {count} chargepoints total — UUID {charger_uuid} not found")
+        log.warning(f"Service account sees {count} chargers total — UUID {charger_uuid} not matched")
         for charger in all_data.get("data", []):
             if charger.get("id", "").lower() == charger_uuid.lower():
                 return parse_charger(charger)
 
-    log.error(f"Charger {charger_uuid} not found via any Ampcontrol endpoint")
+    log.error(f"Charger {charger_uuid} not found in Ampcontrol")
     return {"online": None, "name": "Unknown", "status": "unknown", "raw": {}}
 
 
@@ -505,7 +501,7 @@ def restart_charger(charger_uuid: str) -> bool:
         "operationType": "Reset",
         "protocol": "ocpp1.6"
     }
-    result = ampcontrol_post("/ocppmessages/", payload)
+    result = ampcontrol_post("/ocpp_messages/", payload)
     success = result is not None and result.get("status") == "success"
     log.info(f"{'✅' if success else '❌'} Remote restart for {charger_uuid}: {success}")
     return success
