@@ -345,10 +345,10 @@ def handle_agent_command(sender: str, command: str) -> str:
 
 def get_ampcontrol_token() -> str:
     """
-    Returns a valid Ampcontrol bearer token.
-    Priority:
-    1. Pre-stored AMPCONTROL_TOKEN env var
-    2. Service Account OAuth (client_id + client_secret)
+    Returns a valid Ampcontrol bearer token using Service Account authentication.
+    Endpoint: POST /v2/service_accounts/token/
+    Payload:  {"clientId": "...", "secret": "..."}
+    Expiry:   1080 seconds (18 minutes) — auto-refreshed
     """
     global _ampcontrol_token, _ampcontrol_token_expiry
     with _ampcontrol_lock:
@@ -357,59 +357,42 @@ def get_ampcontrol_token() -> str:
             log.info("Using pre-stored AMPCONTROL_TOKEN")
             return AMPCONTROL_TOKEN_STORED
 
-        # Priority 2: Cached token
-        if _ampcontrol_token and datetime.now().timestamp() < _ampcontrol_token_expiry - 300:
+        # Priority 2: Cached token still valid (with 60 second buffer)
+        if _ampcontrol_token and datetime.now().timestamp() < _ampcontrol_token_expiry - 60:
             return _ampcontrol_token
 
         if not AMPCONTROL_CLIENT_ID or not AMPCONTROL_CLIENT_SECRET:
             log.warning("Ampcontrol credentials not set — add AMPCONTROL_CLIENT_ID and AMPCONTROL_CLIENT_SECRET to Render")
             return ""
 
-        log.info(f"Authenticating Ampcontrol service account: {AMPCONTROL_CLIENT_ID}")
+        log.info(f"Refreshing Ampcontrol service account token for: {AMPCONTROL_CLIENT_ID}")
 
-        # Try service account authentication endpoints
-        attempts = [
-            # Standard OAuth2 client credentials
-            ("POST", "https://api.ampcontrol.io/v2/service-accounts/token/",
-             {"json": {"client_id": AMPCONTROL_CLIENT_ID, "client_secret": AMPCONTROL_CLIENT_SECRET}}),
-            # Legacy sessions with service account fields
-            ("POST", "https://api.ampcontrol.io/v2/sessions/",
-             {"json": {"name": AMPCONTROL_CLIENT_ID, "password": AMPCONTROL_CLIENT_SECRET}}),
-            # OAuth2 form-encoded
-            ("POST", "https://api.ampcontrol.io/v2/service-accounts/token/",
-             {"data": {"grant_type": "client_credentials",
-                       "client_id": AMPCONTROL_CLIENT_ID,
-                       "client_secret": AMPCONTROL_CLIENT_SECRET}}),
-            # Alternative endpoint
-            ("POST", "https://api.ampcontrol.io/v2/auth/token/",
-             {"json": {"client_id": AMPCONTROL_CLIENT_ID, "client_secret": AMPCONTROL_CLIENT_SECRET}}),
-        ]
+        try:
+            response = requests.post(
+                "https://api.ampcontrol.io/v2/service_accounts/token/",
+                json={
+                    "clientId": AMPCONTROL_CLIENT_ID,
+                    "secret":   AMPCONTROL_CLIENT_SECRET
+                },
+                timeout=10
+            )
+            log.info(f"Ampcontrol token request → {response.status_code}")
 
-        for method, url, kwargs in attempts:
-            try:
-                response = requests.request(method, url, timeout=8, **kwargs)
-                log.info(f"Ampcontrol auth [{url}] → {response.status_code}")
-                if response.status_code == 200:
-                    data = response.json()
-                    token = (
-                        data.get("data", [{}])[0].get("session")
-                        or data.get("token")
-                        or data.get("access_token")
-                        or data.get("data", {}).get("token")
-                    )
-                    if token:
-                        _ampcontrol_token = token
-                        _ampcontrol_token_expiry = datetime.now().timestamp() + 86400
-                        log.info(f"✅ Ampcontrol service account authenticated via {url}")
-                        return token
-                    log.warning(f"200 OK but no token in response: {str(data)[:200]}")
-                else:
-                    log.warning(f"Auth failed [{url}]: {response.status_code} — {response.text[:150]}")
-            except Exception as e:
-                log.error(f"Auth exception [{url}]: {e}")
+            if response.status_code == 200:
+                data = response.json()
+                token      = data["data"][0]["token"]
+                expires_in = data["data"][0].get("expires_in", 1080)  # default 18 min
+                _ampcontrol_token        = token
+                _ampcontrol_token_expiry = datetime.now().timestamp() + expires_in
+                log.info(f"✅ Ampcontrol service account token obtained — expires in {expires_in}s")
+                return token
+            else:
+                log.error(f"❌ Ampcontrol token request failed: {response.status_code} — {response.text[:200]}")
+                return ""
 
-        log.error("❌ All Ampcontrol auth attempts failed. Check Service Accounts Guide for correct endpoint.")
-        return ""
+        except Exception as e:
+            log.error(f"❌ Ampcontrol token exception: {e}")
+            return ""
 
 
 def ampcontrol_get(endpoint: str) -> dict | None:
