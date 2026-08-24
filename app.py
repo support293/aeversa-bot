@@ -204,7 +204,7 @@ def notify_agents(customer_number: str, state: dict):
             return
         fault_type = state.get("fault_type", "Not specified")
         site       = state.get("site", "Not provided")
-        charger_id = state.get("charger_id", "Not provided")
+        charger_id = state.get("charger_id") or state.get("charger_uuid") or "Not provided"
         error_code = state.get("error_code", "")
         clean_num  = customer_number.replace("whatsapp:", "")
         error_line = f"🔴 *Error Code:* {error_code}\n" if error_code else ""
@@ -622,9 +622,11 @@ FALLBACK = (
 )
 
 
-def issue_menu(charger_name: str) -> str:
+def issue_menu(charger_name: str, confirmed_online: bool = True) -> str:
+    status_line = "✅ *Charger is online.*\n\n" if confirmed_online else ""
     return (
-        f"✅ *Charger {charger_name} is online.*\n\n"
+        f"{status_line}"
+        f"*Charger: {charger_name}*\n\n"
         "What issue are you experiencing today?\n\n"
         "🔴 *1* – My vehicle is not charging\n"
         "🐢 *2* – The charging speed is slow\n"
@@ -792,7 +794,7 @@ def start_escalation(user_id: str, state: dict, context_msg: str = "") -> str:
     """
     prefix = f"{context_msg}\n\n" if context_msg else ""
     has_site      = bool(state.get("site"))
-    has_charger_id = bool(state.get("charger_id"))
+    has_charger_id = bool(state.get("charger_id") or state.get("charger_uuid"))
 
     if has_site and has_charger_id:
         # Have everything — go straight to agent
@@ -939,41 +941,46 @@ def handle_qr_or_image(user_id: str, state: dict,
 def lookup_charger_and_respond(user_id: str, state: dict,
                                 charger_uuid: str) -> tuple[str, str | None]:
     """
-    Looks up charger status on Ampcontrol and routes accordingly:
-    - ONLINE  → show issue menu
-    - OFFLINE → notify and escalate to technician
-    - UNKNOWN → fall back to manual flow
+    Looks up charger status on Ampcontrol and routes accordingly.
     """
     log.info(f"Looking up charger {charger_uuid} on Ampcontrol")
     charger = get_charger_status(charger_uuid)
 
-    base_state = {**state, "charger_uuid": charger_uuid,
-                   "charger_name": charger.get("name", charger_uuid[:8])}
+    # Build a friendly charger name
+    raw_name = charger.get("name", "")
+    site      = state.get("site", "")
+    if raw_name and raw_name != charger_uuid[:8]:
+        friendly_name = raw_name
+    elif site:
+        friendly_name = f"{site} charger"
+    else:
+        friendly_name = f"Charger ...{charger_uuid[-6:]}"
+
+    base_state = {
+        **state,
+        "charger_uuid":  charger_uuid,
+        "charger_id":    charger_uuid,   # also store as charger_id for escalation
+        "charger_name":  friendly_name,
+    }
 
     if charger["online"] is True:
         user_states[user_id] = {**base_state, "step": "issue_menu"}
-        return (issue_menu(charger["name"]), None)
+        return (issue_menu(friendly_name, confirmed_online=True), None)
 
     elif charger["online"] is False:
-        # Charger is offline — escalate to technician
         user_states[user_id] = {**base_state,
                                   "step": "start",
                                   "fault_type": "Charger offline"}
-        escalation_text = offline_message(charger["name"])
-        return (
-            f"{escalation_text}{AGENT_INTRO}",
-            None
-        )
+        return (f"{offline_message(friendly_name)}{AGENT_INTRO}", None)
 
     else:
-        # Ampcontrol unavailable — fall back to manual issue selection
-        user_states[user_id] = {**base_state,
-                                  "step": "issue_menu",
-                                  "charger_name": charger_uuid[:8]}
-        log.warning("Ampcontrol unavailable — falling back to manual flow")
+        # Ampcontrol unavailable — fall back to issue menu without online confirmation
+        user_states[user_id] = {**base_state, "step": "issue_menu"}
+        log.warning("Ampcontrol unavailable — falling back to manual issue selection")
         return (
-            "⚠️ I couldn't check your charger's live status right now.\n\n"
-            f"{issue_menu(charger_uuid[:8])}",
+            "⚠️ I couldn't verify your charger's live status right now, "
+            "but I can still help.\n\n"
+            f"{issue_menu(friendly_name, confirmed_online=False)}",
             None
         )
 
@@ -1160,6 +1167,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
     # ── After remote restart — vehicle not charging ───────────────────────────
     if step == "await_restart_result":
+        # Ignore images at this step — just re-ask the question
+        if has_media and not msg_raw.strip():
+            return ("Is your vehicle now charging after the restart?\n\nReply *YES* or *NO*", None)
         charger_name = state.get("charger_name", "your charger")
         QUESTION = "Is your vehicle now charging?"
         def yes_fn():
@@ -1781,7 +1791,7 @@ def webhook():
             customer_number = sender.replace("whatsapp:", ""),
             fault_type      = state.get("fault_type", "Not specified"),
             site            = state.get("site"),
-            charger_id      = state.get("charger_id"),
+            charger_id      = state.get("charger_id") or state.get("charger_uuid"),
             error_code      = state.get("error_code"),
             extra_notes     = state.get("extra_notes")
         )
