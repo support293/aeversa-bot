@@ -345,31 +345,46 @@ def get_ampcontrol_token() -> str:
     """Returns a valid Ampcontrol bearer token, refreshing if expired."""
     global _ampcontrol_token, _ampcontrol_token_expiry
     with _ampcontrol_lock:
-        # Return cached token if still valid (with 5 min buffer)
         if _ampcontrol_token and datetime.now().timestamp() < _ampcontrol_token_expiry - 300:
             return _ampcontrol_token
 
         if not AMPCONTROL_EMAIL or not AMPCONTROL_PASSWORD:
-            log.warning("Ampcontrol credentials not configured")
+            log.warning("Ampcontrol credentials not configured — AMPCONTROL_EMAIL or AMPCONTROL_PASSWORD missing")
             return ""
 
-        try:
-            response = requests.post(
-                f"{AMPCONTROL_BASE}/sessions/",
-                json={"name": AMPCONTROL_EMAIL, "password": AMPCONTROL_PASSWORD},
-                timeout=10
-            )
-            response.raise_for_status()
-            data = response.json()
-            token = data["data"][0]["session"]
-            # Tokens expire in 24 hours
-            _ampcontrol_token = token
-            _ampcontrol_token_expiry = datetime.now().timestamp() + 86400
-            log.info("✅ Ampcontrol token refreshed successfully")
-            return token
-        except Exception as e:
-            log.error(f"❌ Ampcontrol login failed: {e}")
-            return ""
+        log.info(f"Attempting Ampcontrol login for {AMPCONTROL_EMAIL}")
+
+        # Try JSON first, then form-encoded (some versions require one or the other)
+        for method, kwargs in [
+            ("JSON",  {"json": {"name": AMPCONTROL_EMAIL, "password": AMPCONTROL_PASSWORD}}),
+            ("form",  {"data": {"name": AMPCONTROL_EMAIL, "password": AMPCONTROL_PASSWORD}}),
+        ]:
+            try:
+                response = requests.post(
+                    f"{AMPCONTROL_BASE}/sessions/",
+                    **kwargs,
+                    headers={"Content-Type": "application/json"} if method == "JSON" else {},
+                    timeout=10
+                )
+                log.info(f"Ampcontrol login [{method}] status: {response.status_code}")
+                if response.status_code == 200:
+                    data = response.json()
+                    log.info(f"Ampcontrol login response keys: {list(data.keys())}")
+                    token = data.get("data", [{}])[0].get("session", "")
+                    if token:
+                        _ampcontrol_token = token
+                        _ampcontrol_token_expiry = datetime.now().timestamp() + 86400
+                        log.info(f"✅ Ampcontrol token obtained via {method}")
+                        return token
+                    else:
+                        log.warning(f"Ampcontrol login succeeded but no session token in response: {data}")
+                else:
+                    log.warning(f"Ampcontrol login [{method}] failed: {response.status_code} — {response.text[:200]}")
+            except Exception as e:
+                log.error(f"Ampcontrol login [{method}] exception: {e}")
+
+        log.error("❌ All Ampcontrol login methods failed")
+        return ""
 
 
 def ampcontrol_get(endpoint: str) -> dict | None:
@@ -1000,13 +1015,18 @@ def lookup_charger_and_respond(user_id: str, state: dict,
         return (f"{offline_message(friendly_name)}{AGENT_INTRO}", None)
 
     else:
-        # Ampcontrol unavailable — fall back to issue menu without online confirmation
-        user_states[user_id] = {**base_state, "step": "issue_menu"}
-        log.warning("Ampcontrol unavailable — falling back to manual issue selection")
+        # Ampcontrol unavailable — fall back to manual diagnostic flow
+        # NEVER attempt restart when we can't reach Ampcontrol
+        user_states[user_id] = {**base_state, "step": "manual_issue_menu"}
+        log.warning("Ampcontrol unavailable — falling back to manual diagnostic flow")
         return (
-            "⚠️ I couldn't verify your charger's live status right now, "
-            "but I can still help.\n\n"
-            f"{issue_menu(friendly_name, confirmed_online=False)}",
+            "⚠️ I couldn't check your charger's live status right now.\n\n"
+            "I'll guide you through some manual troubleshooting steps.\n\n"
+            "What issue are you experiencing?\n\n"
+            "🔴 *1* – My vehicle is not charging\n"
+            "🐢 *2* – The charging speed is slow\n"
+            "❓ *3* – Something else\n"
+            "👤 *4* – Speak to a support agent",
             None
         )
 
@@ -1154,6 +1174,42 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             "`https://portal.ampcontrol.io/#/charger/...uuid.../overview`\n\n"
             "Or type *AGENT* to speak to someone directly. 😊"
         )
+
+    # ── Manual issue menu — used when Ampcontrol is unavailable ──────────────
+    if step == "manual_issue_menu":
+        charger_uuid = state.get("charger_uuid", "")
+        if msg == "1":
+            user_states[user_id] = {**state, "step": "opt1_key_removed",
+                                     "fault_type": "Vehicle not charging"}
+            return (
+                "🔴 *Vehicle Not Charging*\n\n"
+                "Let's get this sorted! First things first:\n\n"
+                "Is your vehicle switched off and the key removed from the ignition?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "2":
+            user_states[user_id] = {**state, "step": "opt3_restart_session",
+                                     "fault_type": "Slow charging"}
+            return (
+                "🐢 *Slow Charging*\n\n"
+                "Let's get your speed up! ⚡\n\n"
+                "Can you stop the charging session and start it again?\n\n"
+                "Reply *YES* or *NO*"
+            )
+        elif msg == "3":
+            user_states[user_id] = {**state, "step": "something_else",
+                                     "fault_type": "Other issue"}
+            return "Please describe the issue you are experiencing and I will get our support team to help. 📋"
+        elif msg == "4":
+            return start_escalation(user_id, state)
+        else:
+            return (
+                "What issue are you experiencing?\n\n"
+                "🔴 *1* – My vehicle is not charging\n"
+                "🐢 *2* – The charging speed is slow\n"
+                "❓ *3* – Something else\n"
+                "👤 *4* – Speak to a support agent"
+            )
 
     # ── Issue menu — shown after charger confirmed online ─────────────────────
     if step == "issue_menu":
