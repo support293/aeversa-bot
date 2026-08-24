@@ -460,25 +460,21 @@ def get_charger_status(charger_uuid: str) -> dict:
             "raw":    charger
         }
 
-    # Attempt 1: Direct UUID lookup (correct endpoint with underscore)
-    data = ampcontrol_get(f"/charge_points/{charger_uuid}/")
-    if data and data.get("data"):
-        return parse_charger(data["data"][0])
-
-    log.warning(f"Direct lookup failed — trying list search for {charger_uuid}")
-
-    # Attempt 2: List and filter
+    # Use list search directly (direct UUID lookup returns 401 for service accounts)
     list_data = ampcontrol_get(f"/charge_points/?search={charger_uuid}")
     if list_data and list_data.get("data"):
         for charger in list_data["data"]:
             if charger.get("id", "").lower() == charger_uuid.lower():
                 return parse_charger(charger)
+        # Return first result if exact match not found
+        if list_data["data"]:
+            return parse_charger(list_data["data"][0])
 
-    # Attempt 3: List all and log count for debugging
+    # Fallback: list all and search
     all_data = ampcontrol_get("/charge_points/")
     if all_data:
         count = all_data.get("total", 0)
-        log.warning(f"Service account sees {count} chargers total — UUID {charger_uuid} not matched")
+        log.info(f"Service account sees {count} chargers total")
         for charger in all_data.get("data", []):
             if charger.get("id", "").lower() == charger_uuid.lower():
                 return parse_charger(charger)
