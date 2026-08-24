@@ -113,7 +113,10 @@ def _send_email_worker(customer_number: str, fault_type: str,
                 ("🕐 Time", timestamp),
                 ("⚠️  Fault Type", fault_type or "Not specified")]
         if site:        rows.append(("📍 Site", site))
-        if charger_id:  rows.append(("🔌 Charger ID", charger_id))
+        if charger_id:
+            charger_name_display = state.get("charger_name", "") if state else ""
+            display = charger_name_display if charger_name_display and charger_name_display != "Unknown" else charger_id
+            rows.append(("🔌 Charger", display))
         if error_code:  rows.append(("🔴 Error Code", error_code))
         if extra_notes: rows.append(("📋 Notes", extra_notes))
 
@@ -206,7 +209,9 @@ def notify_agents(customer_number: str, state: dict):
             return
         fault_type = state.get("fault_type", "Not specified")
         site       = state.get("site", "Not provided")
-        charger_id = state.get("charger_id") or state.get("charger_uuid") or "Not provided"
+        charger_id   = state.get("charger_id") or state.get("charger_uuid") or "Not provided"
+        charger_name = state.get("charger_name", "")
+        charger_display = charger_name if charger_name and charger_name != "Unknown" else charger_id
         error_code = state.get("error_code", "")
         clean_num  = customer_number.replace("whatsapp:", "")
         error_line = f"🔴 *Error Code:* {error_code}\n" if error_code else ""
@@ -215,7 +220,7 @@ def notify_agents(customer_number: str, state: dict):
             f"📱 *Customer:* {clean_num}\n"
             f"⚠️ *Fault:* {fault_type}\n"
             f"📍 *Site:* {site}\n"
-            f"🔌 *Charger ID:* {charger_id}\n"
+            f"🔌 *Charger:* {charger_display}\n"
             f"{error_line}\n"
             f"*To take over from AE-Ace:*\n"
             f"Reply: *PAUSE {clean_num}*\n"
@@ -521,6 +526,15 @@ def extract_uuid_from_text(text: str) -> str | None:
         text, re.IGNORECASE
     )
     return match.group(0) if match else None
+
+
+def search_charger_by_name(name: str) -> dict | None:
+    """Searches Ampcontrol for a charger by name/custom name/ocppId."""
+    log.info(f"Searching Ampcontrol for charger by name: {name}")
+    data = ampcontrol_get(f"/charge_points/?search={name}")
+    if data and data.get("data"):
+        return data["data"][0]
+    return None
 
 
 def read_qr_code(image_url: str) -> str | None:
@@ -1157,16 +1171,27 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
     if step == "await_charger_id":
         if has_media and received_media:
             return handle_qr_or_image(user_id, state, received_media, msg_raw)
+
+        # Check for UUID or Ampcontrol URL
         charger_uuid = extract_uuid_from_text(msg_raw)
         if charger_uuid:
             return lookup_charger_and_respond(user_id, state, charger_uuid)
-        # Customer typed something that isn't a UUID or URL — explain clearly
+
+        # Try searching Ampcontrol by name
+        if len(msg_raw.strip()) >= 3:
+            charger = search_charger_by_name(msg_raw.strip())
+            if charger:
+                charger_uuid = charger.get("id", "")
+                log.info(f"Found charger by name search: {charger.get('customName') or charger.get('name')}")
+                return lookup_charger_and_respond(user_id, state, charger_uuid)
+
         return (
-            "Thanks for that — but I need the *Charger UUID* or the *Ampcontrol link*. 😊\n\n"
-            "The easiest way:\n"
-            "📎 Copy and paste the link from your browser when viewing the charger:\n"
-            "`https://portal.ampcontrol.io/#/charger/...uuid.../overview`\n\n"
-            "Or type *AGENT* to speak to someone directly. 😊"
+            "Thanks for that — I couldn't find a charger with that name. 😊\n\n"
+            "Please try:\n"
+            "📷 Send the *QR code image* from the charger\n"
+            "🔗 Paste the *Ampcontrol link* from the portal\n"
+            "🔤 Type the exact *charger name* as shown in Ampcontrol\n\n"
+            "Or type *AGENT* to speak to someone directly."
         )
 
     # ── Manual issue menu — used when Ampcontrol is unavailable ──────────────
