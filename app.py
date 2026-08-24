@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.rest import Client as TwilioClient
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -18,14 +19,31 @@ log = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = "claude-sonnet-4-6"
-ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_API_KEY    = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL      = "claude-sonnet-4-6"
+ANTHROPIC_URL        = "https://api.anthropic.com/v1/messages"
+
+# Twilio credentials — add these to Render environment variables
+TWILIO_ACCOUNT_SID   = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN    = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_WA_NUMBER     = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
 
 # Email configuration — set RESEND_API_KEY in Render environment variables
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 SUPPORT_EMAIL  = "support@aeversa.com"
-FROM_EMAIL     = "AE Support Bot <onboarding@resend.dev>"  # Update to your domain once verified
+FROM_EMAIL     = "AE Support Bot <onboarding@resend.dev>"
+
+# ── Agent Configuration ────────────────────────────────────────────────────────
+AGENT_NUMBERS = {
+    "whatsapp:+27728472288": "Given",
+    "whatsapp:+27670085445": "Thapelo",
+    "whatsapp:+46704588801": "Mike",
+}
+PAUSE_DURATION_HOURS = 4
+
+# ── Paused Customers ───────────────────────────────────────────────────────────
+# {customer_whatsapp_number: pause_expiry_unix_timestamp}
+paused_customers: dict[str, float] = {}
 
 # ── Media Library ─────────────────────────────────────────────────────────────
 # Media is served directly from the bot's own server (Render)
@@ -166,6 +184,214 @@ def send_escalation_email(customer_number: str, fault_type: str,
     log.info(f"📧 Email thread started for {customer_number}")
 
 
+# ── Agent Notification ────────────────────────────────────────────────────────
+
+def notify_agents(customer_number: str, state: dict):
+    """Sends WhatsApp notification to all agents when an escalation happens."""
+    def _notify():
+        if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+            log.warning("Twilio credentials not set — agent WhatsApp notification skipped")
+            return
+        fault_type = state.get("fault_type", "Not specified")
+        site       = state.get("site", "Not provided")
+        charger_id = state.get("charger_id", "Not provided")
+        error_code = state.get("error_code", "")
+        clean_num  = customer_number.replace("whatsapp:", "")
+        error_line = f"🔴 *Error Code:* {error_code}\n" if error_code else ""
+        message = (
+            f"🔴 *AE-Ace Escalation*\n\n"
+            f"📱 *Customer:* {clean_num}\n"
+            f"⚠️ *Fault:* {fault_type}\n"
+            f"📍 *Site:* {site}\n"
+            f"🔌 *Charger ID:* {charger_id}\n"
+            f"{error_line}\n"
+            f"*To take over from AE-Ace:*\n"
+            f"Reply: *PAUSE {clean_num}*\n"
+            f"Then contact the customer directly on WhatsApp."
+        )
+        client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        for agent_wa, agent_name in AGENT_NUMBERS.items():
+            try:
+                client.messages.create(
+                    from_=TWILIO_WA_NUMBER,
+                    to=agent_wa,
+                    body=message
+                )
+                log.info(f"✅ Agent notification sent to {agent_name}")
+            except Exception as e:
+                log.error(f"❌ Failed to notify {agent_name}: {e}")
+
+    threading.Thread(target=_notify, daemon=True).start()
+
+
+# ── Pause / Resume Helpers ────────────────────────────────────────────────────
+
+def is_paused(customer_number: str) -> bool:
+    """Returns True if the bot is currently paused for this customer."""
+    expiry = paused_customers.get(customer_number)
+    if expiry is None:
+        return False
+    if datetime.now().timestamp() > expiry:
+        del paused_customers[customer_number]
+        return False
+    return True
+
+
+def handle_agent_command(sender: str, command: str) -> str:
+    """Processes commands sent by agents to control AE-Ace."""
+    agent_name = AGENT_NUMBERS.get(sender, "Agent")
+    cmd        = command.strip()
+    cmd_upper  = cmd.upper()
+
+    # ── PAUSE ──────────────────────────────────────────────────────────────────
+    if cmd_upper.startswith("PAUSE"):
+        parts = cmd.split()
+        if len(parts) < 2:
+            return "Usage: *PAUSE +27XXXXXXXXX*\nExample: PAUSE +27760260625"
+        number = parts[1].strip()
+        if not number.startswith("+"):
+            number = f"+{number}"
+        wa_number = f"whatsapp:{number}"
+        expiry = datetime.now().timestamp() + (PAUSE_DURATION_HOURS * 3600)
+        paused_customers[wa_number] = expiry
+        resume_time = datetime.fromtimestamp(expiry).strftime("%H:%M")
+        log.info(f"⏸️ Bot paused for {number} by {agent_name} until {resume_time}")
+        return (
+            f"⏸️ *AE-Ace paused for {number}*\n\n"
+            f"The bot will not respond to this customer for {PAUSE_DURATION_HOURS} hours "
+            f"(until {resume_time}).\n\n"
+            f"You can now assist them directly on WhatsApp.\n"
+            f"To resume early, reply: *RESUME {number}*"
+        )
+
+    # ── RESUME ─────────────────────────────────────────────────────────────────
+    if cmd_upper.startswith("RESUME"):
+        parts = cmd.split()
+        if len(parts) < 2:
+            return "Usage: *RESUME +27XXXXXXXXX*\nExample: RESUME +27760260625"
+        number = parts[1].strip()
+        if not number.startswith("+"):
+            number = f"+{number}"
+        wa_number = f"whatsapp:{number}"
+        if wa_number in paused_customers:
+            del paused_customers[wa_number]
+            log.info(f"▶️ Bot resumed for {number} by {agent_name}")
+            return (
+                f"▶️ *AE-Ace resumed for {number}*\n\n"
+                f"The bot will now respond to this customer's messages again."
+            )
+        return f"ℹ️ {number} is not currently paused."
+
+    # ── STATUS ─────────────────────────────────────────────────────────────────
+    if cmd_upper == "STATUS":
+        # Clean expired pauses first
+        now = datetime.now().timestamp()
+        expired = [k for k, v in paused_customers.items() if now > v]
+        for k in expired:
+            del paused_customers[k]
+        if not paused_customers:
+            return "✅ *No customers currently paused.*\nAE-Ace is handling all conversations."
+        lines = ["📋 *Currently paused customers:*\n"]
+        for wa_num, expiry in paused_customers.items():
+            remaining = int((expiry - now) / 60)
+            clean = wa_num.replace("whatsapp:", "")
+            lines.append(f"• *{clean}* — {remaining} mins remaining")
+        return "\n".join(lines)
+
+    # ── ACTIVE ─────────────────────────────────────────────────────────────────
+    if cmd_upper == "ACTIVE":
+        active = [
+            (uid, s) for uid, s in user_states.items()
+            if uid not in AGENT_NUMBERS and s.get("step", "start") != "start"
+        ]
+        if not active:
+            return "ℹ️ *No customers currently in active support flows.*"
+        lines = ["📊 *Active customer flows:*\n"]
+        for uid, s in active:
+            clean = uid.replace("whatsapp:", "")
+            fault = s.get("fault_type", "Unknown")
+            step  = s.get("step", "unknown")
+            paused = " ⏸️ PAUSED" if is_paused(uid) else ""
+            lines.append(f"• *{clean}*{paused}\n  Fault: {fault} | Step: {step}")
+        return "\n".join(lines)
+
+    # ── HELP / UNKNOWN ─────────────────────────────────────────────────────────
+    return (
+        f"🤖 *AE-Ace Agent Commands*\n\n"
+        f"*PAUSE +27XXXXXXXXX*\n"
+        f"Stop bot for a customer for {PAUSE_DURATION_HOURS} hours\n\n"
+        f"*RESUME +27XXXXXXXXX*\n"
+        f"Resume bot for a customer early\n\n"
+        f"*STATUS*\n"
+        f"See all paused customers\n\n"
+        f"*ACTIVE*\n"
+        f"See all customers in active flows"
+    )
+
+
+def read_qr_code(image_url: str) -> str | None:
+    """
+    Reads a QR code from an image URL using the free QR Server API.
+    Returns the decoded text or None if it fails.
+    """
+    try:
+        # Twilio media URLs require authentication to access
+        # We pass the URL directly to the QR reading API
+        account_sid  = TWILIO_ACCOUNT_SID
+        auth_token   = TWILIO_AUTH_TOKEN
+
+        # Download the image from Twilio first (requires auth)
+        img_response = requests.get(
+            image_url,
+            auth=(account_sid, auth_token),
+            timeout=10
+        )
+        if img_response.status_code != 200:
+            log.warning(f"Failed to download image: {img_response.status_code}")
+            return None
+
+        # Send image bytes to QR Server API
+        qr_response = requests.post(
+            "https://api.qrserver.com/v1/read-qr-code/",
+            files={"file": ("qr.jpg", img_response.content, "image/jpeg")},
+            timeout=10
+        )
+        if qr_response.status_code != 200:
+            log.warning(f"QR API error: {qr_response.status_code}")
+            return None
+
+        data = qr_response.json()
+        decoded = data[0]["symbol"][0]["data"]
+        if decoded:
+            log.info(f"✅ QR code decoded: {decoded}")
+            return decoded
+        return None
+
+    except Exception as e:
+        log.error(f"QR read error: {e}")
+        return None
+
+
+def extract_charger_id_from_qr(qr_data: str) -> str | None:
+    """
+    Extracts the Charger ID from a QR code URL.
+    Handles ampcontrol URLs:
+    https://portal.ampcontrol.io/#/charger/{UUID}/overview
+    """
+    import re
+    # Match ampcontrol UUID pattern
+    match = re.search(
+        r"ampcontrol\.io/#/charger/([a-f0-9\-]{36})",
+        qr_data
+    )
+    if match:
+        return match.group(1)
+    # If QR data is not a URL, return it directly as the Charger ID
+    if not qr_data.startswith("http"):
+        return qr_data.strip()
+    return None
+
+
 def extract_error_code(text: str) -> str | None:
     """Extracts a numeric error code from text like '76', 'error 76', 'error code 76'."""
     import re
@@ -263,6 +489,141 @@ FALLBACK = (
     "🤔 I didn't quite understand that.\n\n"
     "Please type *MENU* to see the options again, or type *AGENT* to speak to a support agent."
 )
+
+
+# ── Smart Response Interpretation ────────────────────────────────────────────
+
+POSITIVE_PHRASES = [
+    "charging now", "it's charging", "its charging", "is charging",
+    "working now", "it works", "it's working", "its working",
+    "started", "fixed", "sorted", "resolved", "all good", "good now",
+    "faster now", "normal now", "charging fine", "it charged",
+    "began charging", "started charging", "yes it is", "yes it's",
+    "seems to be working", "looks good", "working again", "charges now",
+]
+
+NEGATIVE_PHRASES = [
+    "still not", "not working", "doesn't work", "does not work",
+    "wont work", "won't work", "still broken", "same issue",
+    "same problem", "nothing changed", "no change", "not fixed",
+    "still happening", "still the same", "tried that", "already tried",
+    "already did", "multiple times", "5 times", "several times",
+    "3 times", "4 times", "many times", "keeps happening",
+    "still showing", "still offline", "still slow", "still not charging",
+    "not helping", "didn't help", "did not help", "no luck",
+    "tried again", "tried it again",
+]
+
+NEW_ISSUE_PHRASES = [
+    "my charger is", "charger is broken", "charger is not working",
+    "charger is off", "charger not working", "charger won't work",
+    "my vehicle is", "vehicle is not", "different problem",
+    "new problem", "another issue", "something else",
+    "actually my", "actually the",
+]
+
+CONFUSION_PHRASES = [
+    "where", "how do", "what is", "what does", "find", "locate", "?",
+    "can i find", "can you", "don't know", "dont know",
+    "not sure", "unsure", "no idea", "which", "help me",
+    "show me", "dont understand", "don't understand", "i dont understand",
+    "i don't understand", "confused", "lost", "what do you mean",
+    "unclear", "explain", "i need help", "instructions",
+]
+
+
+def interpret_response(msg: str, context: str) -> str:
+    """
+    Interprets a free-text response to a YES/NO question.
+    Returns: 'yes', 'no', 'new_issue', 'confused', 'unclear'
+    """
+    msg_lower = msg.lower().strip()
+
+    if msg_lower in ["yes", "y", "yep", "yeah", "yup", "ja", "correct", "affirmative", "fine", "ok", "okay"]:
+        return "yes"
+    if msg_lower in ["no", "n", "nope", "nah", "negative", "nee", "nada"]:
+        return "no"
+
+    if any(p in msg_lower for p in POSITIVE_PHRASES):
+        return "yes"
+    if any(p in msg_lower for p in NEGATIVE_PHRASES):
+        return "no"
+    if any(p in msg_lower for p in NEW_ISSUE_PHRASES):
+        return "new_issue"
+    if any(p in msg_lower for p in CONFUSION_PHRASES):
+        return "confused"
+
+    if not ANTHROPIC_API_KEY:
+        return "unclear"
+
+    try:
+        response = requests.post(
+            ANTHROPIC_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": ANTHROPIC_MODEL,
+                "max_tokens": 10,
+                "messages": [{
+                    "role": "user",
+                    "content": (
+                        f"Support bot asked: \"{context}\"\n"
+                        f"Customer replied: \"{msg}\"\n\n"
+                        f"Reply ONE word only: yes / no / new_issue / confused / unclear"
+                    )
+                }],
+            },
+            timeout=8,
+        )
+        result = "".join(
+            b.get("text", "") for b in response.json().get("content", [])
+        ).strip().lower().split()[0]
+        return result if result in ["yes", "no", "new_issue", "confused", "unclear"] else "unclear"
+    except Exception as e:
+        log.error(f"interpret_response error: {e}")
+        return "unclear"
+
+
+def smart_yes_no(user_id: str, state: dict, msg: str,
+                  question: str, yes_response, no_response) -> str:
+    """
+    Handles any free-text YES/NO response intelligently.
+    yes_response / no_response can be strings or callables.
+    """
+    result = interpret_response(msg, question)
+    yes_val = yes_response() if callable(yes_response) else yes_response
+    no_val  = no_response()  if callable(no_response)  else no_response
+
+    if result == "yes":
+        return yes_val
+    elif result == "no":
+        return no_val
+    elif result == "new_issue":
+        user_states[user_id] = {**state, "step": "confirm_restart"}
+        return (
+            "⚠️ It sounds like you may have a different issue.\n\n"
+            "Would you like to *start a new support request*?\n\n"
+            "Reply *YES* to start fresh or *NO* to continue with your current issue."
+        )
+    elif result == "confused":
+        return f"No problem! 😊\n\n{question}\n\nPlease reply *YES* or *NO*."
+    else:
+        retries = state.get("retries", 0) + 1
+        user_states[user_id] = {**state, "retries": retries}
+        if retries >= 2:
+            user_states[user_id] = {**state, "step": "start", "retries": 0}
+            return (
+                "I'm having a little trouble understanding — let me connect you "
+                "with a support agent who can help directly. 😊\n\n"
+                f"{AGENT_INTRO}"
+            )
+        return (
+            f"Sorry, I didn't quite catch that! 😊\n\n"
+            f"{question}\n\nPlease reply *YES* or *NO*."
+        )
 
 
 def start_escalation(user_id: str, state: dict, context_msg: str = "") -> str:
@@ -400,7 +761,7 @@ def ask_claude(message_text: str):
 
 # ── State Machine ─────────────────────────────────────────────────────────────
 
-def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple[str, str | None]:
+def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received_media: str = "") -> tuple[str, str | None]:
     msg = msg_raw.strip().lower()
     state = user_states.get(user_id, {"step": "start"})
     step = state.get("step", "start")
@@ -420,6 +781,44 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
     if msg in ["sales", "sales rep", "sales agent"]:
         user_states[user_id] = {"step": "start"}
         return sales_redirect_message()
+
+    # ── Confirm restart step ──────────────────────────────────────────────────
+    if step == "confirm_restart":
+        if msg in ["yes", "y", "yeah", "yep"]:
+            user_states[user_id] = {"step": "start"}
+            return GREETING
+        elif msg in ["no", "n", "nope"]:
+            # Restore previous step
+            prev_step = state.get("prev_step", "start")
+            user_states[user_id] = {**state, "step": prev_step}
+            return (
+                "No problem! Let's continue where we left off.\n\n"
+                "Please reply *YES* or *NO* to my previous question, "
+                "or type *MENU* to start a new request."
+            )
+        else:
+            return (
+                "Would you like to start a new support request?\n\n"
+                "Reply *YES* to start fresh or *NO* to continue."
+            )
+
+    # ── Mid-flow new issue detection ──────────────────────────────────────────
+    # If customer is mid-flow and clearly describes a completely new issue,
+    # offer to restart — but only for steps that expect YES/NO answers
+    YES_NO_STEPS = [
+        "opt1_key_removed", "opt1_replug_fixed", "opt1_removed_key_try",
+        "opt1_error_check", "opt1_try_another_charger", "opt1_other_charger_working",
+        "opt2_power_on_site", "opt2_another_charger", "opt2_other_charger_works",
+        "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_after_wait",
+        "opt3_wattspot_replug", "opt3_other_final_restart",
+    ]
+    if step in YES_NO_STEPS and any(p in msg for p in NEW_ISSUE_PHRASES):
+        user_states[user_id] = {**state, "step": "confirm_restart", "prev_step": step}
+        return (
+            "⚠️ It sounds like you may have a different issue.\n\n"
+            "Would you like to *start a new support request*?\n\n"
+            "Reply *YES* to start fresh or *NO* to continue with your current issue."
+        )
 
     # ── MENU / START STEP ─────────────────────────────────────────────────────
     if step == "start":
@@ -554,47 +953,42 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
             return "Please reply *YES* or *NO*. Is your vehicle switched off and key removed from the ignition?"
 
     if step == "opt1_replug_fixed":
+        QUESTION = "Has this fixed the issue? Is your vehicle now charging?"
         if msg == "yes":
             user_states[user_id] = {"step": "start"}
             return GREAT_NEWS
         elif msg == "no":
-            user_states[user_id] = {**state, "step": "opt1_error_check"}
+            user_states[user_id] = {**state, "step": "opt1_error_check", "retries": 0}
             return (
                 "Sorry to hear that. 😔\n\n"
                 "Is there an *error message* on the charger screen?\n\n"
                 "Reply *YES* or *NO*"
             )
         else:
-            # Customer typed something other than YES/NO — check with Claude
-            ai_result = ask_claude(msg_raw)
-            if ai_result and ai_result.get("intent") == "general":
+            def yes_fn():
                 user_states[user_id] = {"step": "start"}
-                return (
-                    f"{ai_result.get('reply', '')}\n\n"
-                    "Type *MENU* to go back to the main options."
-                )
-            return "Please reply *YES* or *NO*. Is your vehicle now charging?"
+                return GREAT_NEWS
+            def no_fn():
+                user_states[user_id] = {**state, "step": "opt1_error_check", "retries": 0}
+                return "Sorry to hear that. 😔\n\nIs there an *error message* on the charger screen?\n\nReply *YES* or *NO*"
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
 
     if step == "opt1_removed_key_try":
+        QUESTION = "Is your vehicle now charging?"
         if msg == "yes":
             user_states[user_id] = {"step": "start"}
             return GREAT_NEWS
         elif msg == "no":
-            user_states[user_id] = {**state, "step": "opt1_error_check"}
-            return (
-                "Sorry to hear that. 😔\n\n"
-                "Is there an *error message* on the charger screen?\n\n"
-                "Reply *YES* or *NO*"
-            )
+            user_states[user_id] = {**state, "step": "opt1_error_check", "retries": 0}
+            return "Sorry to hear that. 😔\n\nIs there an *error message* on the charger screen?\n\nReply *YES* or *NO*"
         else:
-            ai_result = ask_claude(msg_raw)
-            if ai_result and ai_result.get("intent") == "general":
+            def yes_fn():
                 user_states[user_id] = {"step": "start"}
-                return (
-                    f"{ai_result.get('reply', '')}\n\n"
-                    "Type *MENU* to go back to the main options."
-                )
-            return "Please reply *YES* or *NO*. Is your vehicle now charging?"
+                return GREAT_NEWS
+            def no_fn():
+                user_states[user_id] = {**state, "step": "opt1_error_check", "retries": 0}
+                return "Sorry to hear that. 😔\n\nIs there an *error message* on the charger screen?\n\nReply *YES* or *NO*"
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
 
     if step == "opt1_error_check":
         if msg == "yes":
@@ -642,17 +1036,21 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
             return "Please reply *YES* or *NO*. Is there another charger available at this location?"
 
     if step == "opt1_other_charger_working":
+        QUESTION = "Is your vehicle now charging on the other charger?"
         if msg == "yes":
             user_states[user_id] = {"step": "start"}
             return GREAT_NEWS
         elif msg == "no":
             user_states[user_id] = {**state, "step": "opt1_site_name"}
-            return (
-                "I'm sorry to hear that. 😔\n\n"
-                "Which *site* are you calling from? Please type the site name."
-            )
+            return "I'm sorry to hear that. 😔\n\nWhich *site* are you calling from? Please type the site name."
         else:
-            return "Please reply *YES* or *NO*. Is your vehicle charging on the other charger?"
+            def yes_fn():
+                user_states[user_id] = {"step": "start"}
+                return GREAT_NEWS
+            def no_fn():
+                user_states[user_id] = {**state, "step": "opt1_site_name"}
+                return "I'm sorry to hear that. 😔\n\nWhich *site* are you calling from? Please type the site name."
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
 
     if step == "opt1_site_name":
         site = msg_raw.strip()
@@ -772,18 +1170,14 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
             return "Please reply *YES* or *NO*. Can you stop the charging session and start it again?"
 
     if step == "opt3_still_slow":
+        QUESTION = "Is the charging speed still slow?"
         if msg == "no":
             user_states[user_id] = {"step": "start"}
             return GREAT_NEWS
         elif msg == "yes":
             user_states[user_id] = {**state, "step": "opt3_which_site"}
-            return (
-                "Let's dig deeper. 🔍\n\n"
-                "Which *site* are you calling from?\n\n"
-                "Reply *1* for Wattspot or *2* for Other"
-            )
+            return "Let's dig deeper. 🔍\n\nWhich *site* are you calling from?\n\nReply *1* for Wattspot or *2* for Other"
         else:
-            # Check if customer is saying it's now working
             positive_phrases = ["charging now", "its charging", "it's charging", "working now",
                                  "it works", "its working", "it's working", "working", "sorted",
                                  "fixed", "resolved", "charging fine", "all good", "good now",
@@ -791,7 +1185,13 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
             if any(phrase in msg for phrase in positive_phrases):
                 user_states[user_id] = {"step": "start"}
                 return GREAT_NEWS
-            return "Please reply *YES* or *NO*. Is the charging speed still slow?"
+            def yes_fn():
+                user_states[user_id] = {**state, "step": "opt3_which_site"}
+                return "Let's dig deeper. 🔍\n\nWhich *site* are you calling from?\n\nReply *1* for Wattspot or *2* for Other"
+            def no_fn():
+                user_states[user_id] = {"step": "start"}
+                return GREAT_NEWS
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, no_fn, yes_fn)
 
     if step == "opt3_which_site":
         if msg in ["1", "wattspot"]:
@@ -930,6 +1330,29 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
         )
 
     if step == "charger_fault_id":
+        # ── QR Code Detection ─────────────────────────────────────────────────
+        if has_media and received_media:
+            log.info(f"📷 QR image received in charger fault ID step")
+            qr_data = read_qr_code(received_media)
+            if qr_data:
+                charger_id = extract_charger_id_from_qr(qr_data)
+                if charger_id:
+                    site = state.get("site", "Unknown site")
+                    user_states[user_id] = {**state, "step": "start", "charger_id": charger_id}
+                    return (
+                        f"✅ *QR code scanned successfully!*\n\n"
+                        f"I have identified your charger:\n\n"
+                        f"📍 *Site:* {site}\n"
+                        f"🔌 *Charger ID:* `{charger_id}`\n\n"
+                        f"Our support team will investigate immediately.\n\n"
+                        f"{AGENT_INTRO}"
+                    )
+            return (
+                "📷 I received your image but couldn't read a QR code from it.\n\n"
+                "Please type the *Charger ID* manually.\n\n"
+                "📍 The sticker is on the *front of the charger, underneath the screen.*",
+                get_media("charger_id_northgate")
+            )
         charger_id = msg_raw.strip()
         site = state.get("site", "Unknown site")
         user_states[user_id] = {**state, "step": "start", "charger_id": charger_id}
@@ -957,19 +1380,46 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False) -> tuple
         )
 
     if step == "pre_escalate_charger_id":
-        # Detect if customer is asking a question rather than providing the ID
-        question_phrases = [
-            "where", "how", "what", "find", "locate", "look", "?",
-            "can i find", "can you", "don't know", "not sure", "no idea",
-            "which", "help", "show me"
-        ]
-        if any(phrase in msg for phrase in question_phrases):
+        # ── QR Code Detection ─────────────────────────────────────────────────
+        if has_media and received_media:
+            log.info(f"📷 Image received in charger ID step — attempting QR decode")
+            qr_data = read_qr_code(received_media)
+            if qr_data:
+                charger_id = extract_charger_id_from_qr(qr_data)
+                if charger_id:
+                    site       = state.get("site", "Not provided")
+                    fault_type = state.get("fault_type", "Not specified")
+                    error_code = state.get("error_code", "")
+                    user_states[user_id] = {**state, "step": "start", "charger_id": charger_id}
+                    error_line = f"🔴 *Error Code:* {error_code}\n" if error_code else ""
+                    return (
+                        f"✅ *QR code scanned successfully!*\n\n"
+                        f"I have identified your charger:\n\n"
+                        f"📍 *Site:* {site}\n"
+                        f"🔌 *Charger ID:* `{charger_id}`\n"
+                        f"⚠️ *Fault:* {fault_type}\n"
+                        f"{error_line}\n"
+                        f"Connecting you to our support team now.\n\n"
+                        f"{AGENT_INTRO}"
+                    )
+            # QR decode failed — ask them to type it instead
+            return (
+                "📷 I received your image but couldn't read a QR code from it.\n\n"
+                "Please type the *Charger ID* manually.\n\n"
+                "📍 The sticker is on the *front of the charger, underneath the screen.*",
+                get_media("charger_id_northgate")
+            )
+
+        # ── Question/confusion detection ──────────────────────────────────────
+        if any(phrase in msg for phrase in CONFUSION_PHRASES):
             return (
                 "📍 The *Charger ID* sticker is on the *front of the charger, "
                 "underneath the screen.*\n\n"
                 "It is a combination of letters and numbers — for example *CPO-001* "
                 "or *AE-12345*.\n\n"
-                "Please type the Charger ID once you have found it. 😊",
+                "💡 *Tip:* You can also scan the *QR code* on the charger and send "
+                "me the image — I'll read it automatically! 📷\n\n"
+                "Please type the Charger ID or send the QR code image. 😊",
                 get_media("charger_id_northgate")
             )
 
@@ -1017,21 +1467,37 @@ def serve_media(filename):
 # ── Webhook ───────────────────────────────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    incoming  = request.form.get("Body", "").strip()
-    sender    = request.form.get("From", "unknown")
-    has_media = request.form.get("NumMedia", "0") != "0"
+    incoming        = request.form.get("Body", "").strip()
+    sender          = request.form.get("From", "unknown")
+    num_media       = int(request.form.get("NumMedia", "0"))
+    has_media       = num_media > 0
+    received_media  = request.form.get("MediaUrl0", "") if has_media else ""
 
-    result = handle_message(sender, incoming, has_media=has_media)
+    # ── Agent command handling ────────────────────────────────────────────────
+    if sender in AGENT_NUMBERS:
+        log.info(f"Agent command from {AGENT_NUMBERS[sender]}: {incoming}")
+        response_text = handle_agent_command(sender, incoming)
+        resp = MessagingResponse()
+        resp.message(response_text)
+        return str(resp)
 
-    # handle_message returns either a string or a (text, media_url) tuple
+    # ── Paused customer — bot stays silent ───────────────────────────────────
+    if is_paused(sender):
+        log.info(f"Bot paused for {sender} — message ignored")
+        return str(MessagingResponse())  # Empty response — bot stays silent
+
+    # ── Normal customer flow ──────────────────────────────────────────────────
+    result = handle_message(sender, incoming, has_media=has_media, received_media=received_media)
+
     if isinstance(result, tuple):
         response_text, media_url = result
     else:
         response_text, media_url = result, None
 
-    # ── Auto-detect escalation and send support email ─────────────────────────
+    # ── Escalation detected — notify agents ──────────────────────────────────
     if "Connecting you to a support agent" in response_text:
         state = user_states.get(sender, {})
+        # Send email notification
         send_escalation_email(
             customer_number = sender.replace("whatsapp:", ""),
             fault_type      = state.get("fault_type", "Not specified"),
@@ -1040,16 +1506,15 @@ def webhook():
             error_code      = state.get("error_code"),
             extra_notes     = state.get("extra_notes")
         )
+        # Send WhatsApp notification to all agents
+        notify_agents(sender, state)
 
     # ── Build TwiML response ──────────────────────────────────────────────────
     resp = MessagingResponse()
-
     if media_url:
-        # Send text instruction first, then media as a separate message
         resp.message(response_text)
-        # Use appropriate caption based on media type
         is_video = media_url.lower().endswith((".mp4", ".mp4.mp4", ".mov"))
-        caption = "📹 *Guide video*" if is_video else "📸 *Reference image*"
+        caption  = "📹 *Guide video*" if is_video else "📸 *Reference image*"
         media_msg = resp.message(caption)
         media_msg.media(media_url)
         log.info(f"📎 Sending {'video' if is_video else 'image'}: {media_url}")
@@ -1061,11 +1526,18 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def health_check():
-    ai_status    = "configured" if ANTHROPIC_API_KEY else "NOT configured"
-    email_status = "configured" if RESEND_API_KEY else "NOT configured"
-    kb_count = len(KNOWLEDGE_BASE.get("faqs", []))
-    return (f"AE Bot is running. Claude AI: {ai_status}. "
-            f"Email: {email_status}. Knowledge base: {kb_count} FAQs loaded.")
+    ai_status     = "configured" if ANTHROPIC_API_KEY else "NOT configured"
+    email_status  = "configured" if RESEND_API_KEY else "NOT configured"
+    twilio_status = "configured" if TWILIO_ACCOUNT_SID else "NOT configured"
+    kb_count      = len(KNOWLEDGE_BASE.get("faqs", []))
+    agent_count   = len(AGENT_NUMBERS)
+    paused_count  = len(paused_customers)
+    return (
+        f"AE-Ace Bot is running ✅\n"
+        f"Claude AI: {ai_status} | Email: {email_status} | "
+        f"Twilio Agents: {twilio_status} | KB: {kb_count} FAQs | "
+        f"Agents: {agent_count} | Paused customers: {paused_count}"
+    )
 
 
 if __name__ == "__main__":
