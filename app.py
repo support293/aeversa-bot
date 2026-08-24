@@ -929,11 +929,17 @@ def handle_qr_or_image(user_id: str, state: dict,
         charger_uuid = extract_charger_id_from_qr(qr_data)
         if charger_uuid:
             return lookup_charger_and_respond(user_id, state, charger_uuid)
-    # Could not decode QR — ask customer to type ID
+    # Could not decode QR — move to await_charger_id step
+    user_states[user_id] = {**state, "step": "await_charger_id"}
     return (
-        "📷 I received your image but couldn't read a QR code from it.\n\n"
-        "Please type your *Charger ID* manually.\n\n"
-        "📍 The sticker is on the *front of the charger, underneath the screen.*",
+        "📷 I received your image but couldn't read the QR code. 😔\n\n"
+        "No problem! Please type the *Charger UUID* — you can find it by:\n\n"
+        "1️⃣ Go to **portal.ampcontrol.io**\n"
+        "2️⃣ Click on your charger\n"
+        "3️⃣ Go to *Settings*\n"
+        "4️⃣ Copy the *Charger UUID*\n\n"
+        "It looks like this: `6cd2389b-a278-5463-a8b2-f793603971b3`\n\n"
+        "Or try sending the QR code photo again with better lighting. 📷",
         get_media("charger_id_northgate")
     )
 
@@ -1119,8 +1125,33 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return lookup_charger_and_respond(user_id, state, msg.strip())
         return (
             "Please send me the *QR code image* from your charger 📷\n\n"
-            "Or if you can't find it, type your *Charger ID* (the number on the sticker "
-            "on the front of the charger under the screen)."
+            "Or if you can't find it, type your *Charger UUID* "
+            "(found in the charger settings on portal.ampcontrol.io)."
+        )
+
+    # ── Waiting for Charger UUID after QR failed ──────────────────────────────
+    if step == "await_charger_id":
+        # Try image again
+        if has_media and received_media:
+            return handle_qr_or_image(user_id, state, received_media, msg_raw)
+        # Check for UUID format
+        import re
+        uuid_match = re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            msg.strip(), re.IGNORECASE
+        )
+        if uuid_match:
+            return lookup_charger_and_respond(user_id, state, msg.strip())
+        # Customer typed something that isn't a UUID — explain clearly
+        return (
+            "Thanks for that — but I need the *Charger UUID*, not the site name. 😊\n\n"
+            "The UUID looks like this:\n"
+            "`6cd2389b-a278-5463-a8b2-f793603971b3`\n\n"
+            "You can find it by:\n"
+            "1️⃣ Going to **portal.ampcontrol.io**\n"
+            "2️⃣ Clicking on your charger\n"
+            "3️⃣ Going to *Settings* → copy the *Charger UUID*\n\n"
+            "Or type *AGENT* if you'd prefer to speak to someone directly. 😊"
         )
 
     # ── Issue menu — shown after charger confirmed online ─────────────────────
