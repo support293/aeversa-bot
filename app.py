@@ -1382,24 +1382,70 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         if charger_uuid:
             return lookup_charger_and_respond(user_id, state, charger_uuid)
 
-        # EVERYTHING ELSE — always ask for QR code
-        # This includes greetings, questions, random text, anything
+        # Try Ampcontrol name search for typed text
+        skip_words = set(CONFUSION_PHRASES + [
+            "hi", "hello", "hey", "yes", "no", "ok", "okay",
+            "thanks", "thank you", "yo", "sup", "help"
+        ])
+        if (len(msg_raw.strip()) >= 3 and
+                not any(w in msg.lower() for w in skip_words)):
+            charger = search_charger_by_name(msg_raw.strip())
+            if charger:
+                charger_uuid = charger.get("id", "")
+                log.info(f"Found charger by typed name at start: {charger.get('customName') or charger.get('name')}")
+                return lookup_charger_and_respond(user_id, state, charger_uuid)
+
+        # EVERYTHING ELSE — show greeting and move to await_qr
         user_states[user_id] = {"step": "await_qr"}
         return GREETING
 
-    # ── Waiting for QR code ───────────────────────────────────────────────────
+    # ── Waiting for QR code / charger name ───────────────────────────────────
     if step == "await_qr":
         if has_media and received_media:
             return handle_qr_or_image(user_id, state, received_media, msg_raw)
+
+        # Check for UUID or Ampcontrol URL
         charger_uuid = extract_uuid_from_text(msg_raw)
         if charger_uuid:
             return lookup_charger_and_respond(user_id, state, charger_uuid)
+
+        # Skip common words and very short input
+        skip_words = set(CONFUSION_PHRASES + [
+            "hi", "hello", "hey", "yes", "no", "ok", "okay",
+            "thanks", "thank you", "yo", "sup", "help"
+        ])
+        if (len(msg_raw.strip()) >= 3 and
+                not any(w in msg.lower() for w in skip_words)):
+
+            # Try Ampcontrol name search
+            charger = search_charger_by_name(msg_raw.strip())
+            if charger:
+                charger_uuid = charger.get("id", "")
+                log.info(f"Found charger by typed name: {charger.get('customName') or charger.get('name')}")
+                return lookup_charger_and_respond(user_id, state, charger_uuid)
+
+        # Track failed attempts
+        attempts = state.get("unrecognized_attempts", 0) + 1
+        user_states[user_id] = {**state, "step": "await_qr",
+                                  "unrecognized_attempts": attempts}
+
+        # After 3 failed attempts — escalate to agent
+        if attempts >= 3:
+            user_states[user_id] = {**state, "step": "start",
+                                      "unrecognized_attempts": 0}
+            return start_escalation(user_id, state,
+                "I'm having trouble identifying your charger. 😔\n\n"
+                "Let me connect you with a support agent who can help directly.")
+
+        # Still have attempts left — guide them clearly
         return (
-            "Please send me a photo of:\n\n"
-            "📷 The *QR code* on the charger, or\n"
-            "📷 The *charger name sticker* on the unit\n\n"
-            "I'll read it automatically! 😊\n\n"
-            "Or type the *charger name* if you know it."
+            f"I couldn't find a charger matching that. 😔 "
+            f"({3 - attempts} attempt{'s' if 3 - attempts != 1 else ''} remaining)\n\n"
+            "Please try:\n"
+            "📷 Send a *photo of the QR code* on the charger\n"
+            "📷 Send a *photo of the name sticker* on the charger\n"
+            "✍️ Type the *exact charger name* as shown on the unit\n\n"
+            "Or type *AGENT* to speak to someone directly."
         )
 
     # ── Waiting for Charger UUID after QR failed ──────────────────────────────
