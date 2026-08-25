@@ -1559,7 +1559,53 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         elif msg == "4":
             return start_escalation(user_id, state)
         else:
-            return issue_menu(charger_name)
+            # Customer typed free text instead of a number
+            # Use Claude to understand intent and route automatically
+            ai_result = ask_claude(msg_raw)
+            intent = ai_result.get("intent", "unclear") if ai_result else "unclear"
+
+            if intent in ["not_charging", "charger_fault", "charger_off"]:
+                user_states[user_id] = {**state, "step": "await_restart_result",
+                                         "fault_type": "Vehicle not charging"}
+                threading.Thread(
+                    target=lambda: restart_charger(charger_uuid), daemon=True
+                ).start()
+                return (
+                    f"It sounds like your vehicle isn't charging — "
+                    f"let me restart *{charger_name}* remotely right now. 🔄\n\n"
+                    "Please unplug, wait 2 minutes, then plug back in.\n\n"
+                    "Is your vehicle now charging?\n\nReply *YES* or *NO*",
+                    get_media("cable_plugin")
+                )
+            elif intent == "slow_charging":
+                user_states[user_id] = {**state, "step": "await_slow_restart_result",
+                                         "fault_type": "Slow charging"}
+                threading.Thread(
+                    target=lambda: restart_charger(charger_uuid), daemon=True
+                ).start()
+                return (
+                    f"I'll restart *{charger_name}* remotely to reset the session. 🔄\n\n"
+                    "Please stop your session, wait 2 minutes, then start a new one.\n\n"
+                    "Is the speed better?\n\nReply *YES* or *NO*"
+                )
+            elif intent == "agent":
+                return start_escalation(user_id, state)
+            elif intent == "general":
+                ai_reply = ai_result.get("reply", "")
+                return (
+                    f"{ai_reply}\n\n"
+                    f"{issue_menu(charger_name, confirmed_online=False)}"
+                )
+            else:
+                # Capture description and escalate
+                user_states[user_id] = {**state, "fault_type": "Other issue",
+                                         "extra_notes": msg_raw.strip()}
+                return start_escalation(
+                    user_id,
+                    {**state, "fault_type": "Other issue", "extra_notes": msg_raw.strip()},
+                    f"I've noted your issue: *\"{msg_raw.strip()}\"*\n\n"
+                    "Let me connect you with a support agent."
+                )
 
     # ── After remote restart — vehicle not charging ───────────────────────────
     if step == "await_restart_result":
