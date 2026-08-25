@@ -19,9 +19,6 @@ log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Start session timeout checker immediately (works on Render + local)
-start_timeout_checker()
-
 # ── Configuration ─────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY    = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL      = "claude-sonnet-4-6"
@@ -2230,6 +2227,9 @@ def health_check():
     )
 
 
+
+# Start session timeout checker (runs on both Render and local)
+start_timeout_checker()
+
 if __name__ == "__main__":
-    start_timeout_checker()
     app.run(debug=True, port=5000)
