@@ -1053,33 +1053,34 @@ def smart_yes_no(user_id: str, state: dict, msg: str,
 def start_escalation(user_id: str, state: dict, context_msg: str = "") -> str:
     """
     Routes to pre-escalation info gathering before connecting to agent.
-    Collects site name and Charger ID if not already captured.
-    context_msg: optional message to show before asking for missing info.
+    If charger was already identified via Ampcontrol, goes straight to agent.
     """
     prefix = f"{context_msg}\n\n" if context_msg else ""
-    has_site      = bool(state.get("site"))
     has_charger_id = bool(state.get("charger_id") or state.get("charger_uuid"))
+    has_site       = bool(state.get("site"))
 
-    if has_site and has_charger_id:
-        # Have everything — go straight to agent
+    # If we already identified the charger via Ampcontrol, go straight to agent
+    # We have everything we need — no need to ask for site or charger ID again
+    if has_charger_id:
         user_states[user_id] = {**state, "step": "start"}
         return f"{prefix}{AGENT_INTRO}"
-    elif has_site:
-        # Have site, just need Charger ID
-        user_states[user_id] = {**state, "step": "pre_escalate_charger_id"}
-        return (
-            f"{prefix}Before I connect you to an agent, I just need one more detail.\n\n"
-            "What is the *Charger ID*?\n\n"
-            "📍 The sticker is on the *front of the charger, underneath the screen.*\n\n"
-            "Please type it below."
-        )
-    else:
-        # Need both site and Charger ID
+
+    # Need site name
+    if not has_site:
         user_states[user_id] = {**state, "step": "pre_escalate_site"}
         return (
             f"{prefix}Before I connect you to an agent, I need a couple of quick details.\n\n"
             "Which *site* are you calling from? Please type the site name."
         )
+
+    # Have site but need charger ID
+    user_states[user_id] = {**state, "step": "pre_escalate_charger_id"}
+    return (
+        f"{prefix}Before I connect you to an agent, I just need one more detail.\n\n"
+        "What is the *Charger ID*?\n\n"
+        "📍 The sticker is on the *front of the charger, underneath the screen.*\n\n"
+        "Please type it below."
+    )
 
 def sales_redirect_message() -> str:
     name = SALES_INFO.get("name", "our sales team")
@@ -1558,11 +1559,13 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
     # ── Something else ────────────────────────────────────────────────────────
     if step == "something_else":
-        description = msg_raw.strip()
-        user_states[user_id] = {**state, "step": "start",
-                                  "extra_notes": description}
-        return start_escalation(user_id, state,
-            f"Thank you for describing the issue. I have noted: *\"{description}\"*\n\n"
+        description  = msg_raw.strip()
+        charger_name = state.get("charger_name", "")
+        charger_info = f" at *{charger_name}*" if charger_name else ""
+        user_states[user_id] = {**state, "step": "start", "extra_notes": description}
+        return start_escalation(user_id, {**state, "extra_notes": description},
+            f"Thank you for describing the issue{charger_info}.\n\n"
+            f"I have noted: *\"{description}\"*\n\n"
             "Let me connect you with a support agent who can help.")
 
 
