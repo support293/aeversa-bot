@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import requests
 import threading
 import logging
@@ -17,6 +18,9 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# Start session timeout checker immediately (works on Render + local)
+start_timeout_checker()
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY    = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -56,6 +60,23 @@ PAUSE_DURATION_HOURS = 4
 # ── Paused Customers ───────────────────────────────────────────────────────────
 # {customer_whatsapp_number: pause_expiry_unix_timestamp}
 paused_customers: dict[str, float] = {}
+
+# ── Session Timeout Settings ──────────────────────────────────────────────────
+ESCALATION_TIMEOUT_SECS = 600    # 10 minutes — notify agent if no response
+SESSION_RESET_SECS      = 7200   # 2 hours   — reset session completely
+
+# Steps where a customer is actively waiting for YES/NO — these trigger escalation
+MID_FLOW_STEPS = {
+    "opt1_key_removed", "opt1_replug_fixed", "opt1_removed_key_try",
+    "opt1_error_check", "opt1_try_another_charger", "opt1_other_charger_working",
+    "opt2_power_on_site", "opt2_another_charger", "opt2_other_charger_works",
+    "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_wifi",
+    "opt3_wattspot_replug", "opt3_other_4g", "opt3_other_final_restart",
+    "await_restart_result", "await_slow_restart_result",
+    "issue_menu", "manual_issue_menu",
+    "pre_escalate_site", "pre_escalate_charger_id",
+    "something_else", "confirm_restart",
+}
 
 # ── Media Library ─────────────────────────────────────────────────────────────
 # Media is served directly from the bot's own server (Render)
@@ -200,6 +221,96 @@ def send_escalation_email(customer_number: str, fault_type: str,
 
 
 # ── Agent Notification ────────────────────────────────────────────────────────
+
+def send_whatsapp_message(to: str, message: str):
+    """Sends a proactive WhatsApp message to a customer via Twilio REST API."""
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+        log.warning("Twilio credentials not set — cannot send proactive message")
+        return
+    try:
+        client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        client.messages.create(
+            from_=TWILIO_WA_NUMBER,
+            to=to,
+            body=message
+        )
+        log.info(f"✅ Proactive message sent to {to}")
+    except Exception as e:
+        log.error(f"❌ Failed to send proactive message to {to}: {e}")
+
+
+def check_session_timeouts():
+    """
+    Checks all active sessions for timeouts:
+    - 10 minutes mid-flow → notify agents + send customer reminder
+    - 2 hours any session → silently reset to start
+    """
+    now = datetime.now().timestamp()
+    for user_id, state in list(user_states.items()):
+
+        # Skip agent numbers
+        if user_id in AGENT_NUMBERS:
+            continue
+
+        # Skip paused customers — agent has taken over
+        if is_paused(user_id):
+            continue
+
+        step          = state.get("step", "start")
+        last_activity = state.get("last_activity", 0)
+
+        # Skip sessions with no recorded activity
+        if last_activity == 0:
+            continue
+
+        elapsed = now - last_activity
+
+        # ── 2 Hour Session Reset ──────────────────────────────────────────────
+        if elapsed > SESSION_RESET_SECS:
+            log.info(f"🔄 Session reset for {user_id} — inactive for {elapsed/3600:.1f}h")
+            user_states[user_id] = {"step": "start", "last_activity": 0}
+            continue
+
+        # ── 10 Minute Mid-Flow Escalation ────────────────────────────────────
+        if (elapsed > ESCALATION_TIMEOUT_SECS
+                and step in MID_FLOW_STEPS
+                and not state.get("timeout_escalated", False)):
+
+            log.info(f"⏰ Timeout escalation for {user_id} — {elapsed/60:.0f}min in step '{step}'")
+
+            # Mark as escalated so we don't send again
+            user_states[user_id] = {**state, "timeout_escalated": True}
+
+            # Notify agents
+            notify_agents(user_id, {
+                **state,
+                "fault_type": state.get("fault_type", "Unknown"),
+                "extra_notes": f"⏰ No customer response for {elapsed/60:.0f} minutes (step: {step})"
+            })
+
+            # Send gentle reminder to customer
+            clean_num = user_id.replace("whatsapp:", "")
+            send_whatsapp_message(
+                user_id,
+                "⏰ Hi! Just checking in — it looks like you may still need help. 😊\n\n"
+                "Please reply *YES* or *NO* to continue, or type *MENU* to start a new request.\n\n"
+                "If your issue is resolved, no action needed! ✅"
+            )
+
+
+def start_timeout_checker():
+    """Starts a background thread that checks session timeouts every 60 seconds."""
+    def _run():
+        log.info("⏱️ Session timeout checker started")
+        while True:
+            time.sleep(60)
+            try:
+                check_session_timeouts()
+            except Exception as e:
+                log.error(f"Timeout checker error: {e}")
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
 
 def notify_agents(customer_number: str, state: dict):
     """Sends WhatsApp notification to all agents when an escalation happens."""
@@ -1186,7 +1297,16 @@ def lookup_charger_and_respond(user_id: str, state: dict,
 def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received_media: str = "") -> tuple[str, str | None]:
     msg = msg_raw.strip().lower()
     state = user_states.get(user_id, {"step": "start"})
-    step = state.get("step", "start")
+    step  = state.get("step", "start")
+
+    # ── Record activity timestamp + clear timeout flag on any response ────────
+    now = datetime.now().timestamp()
+    user_states[user_id] = {
+        **state,
+        "last_activity":    now,
+        "timeout_escalated": False,   # reset so we can escalate again if needed
+    }
+    state = user_states[user_id]
 
     # ── Global Commands — these work from ANY step ────────────────────────────
     # MENU resets to start from anywhere
@@ -2062,4 +2182,5 @@ def health_check():
 
 
 if __name__ == "__main__":
+    start_timeout_checker()
     app.run(debug=True, port=5000)
