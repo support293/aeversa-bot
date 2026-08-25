@@ -539,6 +539,79 @@ def search_charger_by_name(name: str) -> dict | None:
     return None
 
 
+def read_text_from_image(image_url: str) -> str | None:
+    """
+    Uses Claude vision to read charger name/ID text from a sticker or label photo.
+    Falls back gracefully if Claude is unavailable.
+    """
+    if not ANTHROPIC_API_KEY or not TWILIO_ACCOUNT_SID:
+        return None
+    try:
+        import base64
+        # Download image from Twilio (requires auth)
+        img_response = requests.get(
+            image_url,
+            auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
+            timeout=10
+        )
+        if img_response.status_code != 200:
+            log.warning(f"Failed to download image for OCR: {img_response.status_code}")
+            return None
+
+        img_base64    = base64.b64encode(img_response.content).decode("utf-8")
+        content_type  = img_response.headers.get("content-type", "image/jpeg")
+
+        response = requests.post(
+            ANTHROPIC_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": ANTHROPIC_MODEL,
+                "max_tokens": 60,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": content_type,
+                                "data": img_base64
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": (
+                                "This is a photo of an EV charger or its sticker/label. "
+                                "What is the charger name, ID, or serial number shown on it? "
+                                "Reply with ONLY the charger name or ID text you can see — "
+                                "nothing else, no explanation. "
+                                "If you cannot read any identifying text, reply with exactly: NONE"
+                            )
+                        }
+                    ]
+                }]
+            },
+            timeout=15
+        )
+
+        if response.status_code == 200:
+            text = "".join(
+                b.get("text", "") for b in response.json().get("content", [])
+            ).strip()
+            if text and text.upper() != "NONE":
+                log.info(f"✅ Claude vision read charger text: '{text}'")
+                return text
+        return None
+
+    except Exception as e:
+        log.error(f"Image OCR error: {e}")
+        return None
+
+
 def read_qr_code(image_url: str) -> str | None:
     """
     Reads a QR code from an image URL using the free QR Server API.
@@ -675,11 +748,10 @@ user_states = {}
 GREETING = (
     "👋 Hello, welcome to the Aeversa helpdesk!\n\n"
     "My name is *AE-Ace* and I am here to get you charged up. ⚡\n\n"
-    "To get started, please *scan the QR code* on your charger "
-    "and send me the image. 📷\n\n"
-    "I will use it to check your charger's status and help you "
-    "as quickly as possible!\n\n"
-    "💡 _Can't find the QR code? Send me the Ampcontrol link or type the Charger UUID._"
+    "To get started, please send me one of the following:\n\n"
+    "📷 A photo of the *QR code* on your charger\n"
+    "📷 A photo of the *charger name sticker*\n\n"
+    "I will read it and check your charger's status immediately!"
 )
 
 GREAT_NEWS = (
@@ -1004,23 +1076,57 @@ def ask_claude(message_text: str):
 
 def handle_qr_or_image(user_id: str, state: dict,
                         image_url: str, msg_raw: str) -> tuple[str, str | None]:
-    """Tries to decode a QR code from an image and look up the charger."""
+    """
+    Handles an image sent by a customer:
+    1. Try QR code decode → get UUID → look up charger
+    2. Try Claude vision OCR → read sticker text → search Ampcontrol by name
+    3. Fall back to asking for manual input
+    """
+    # Step 1: Try QR code decode
     qr_data = read_qr_code(image_url)
     if qr_data:
         charger_uuid = extract_charger_id_from_qr(qr_data)
         if charger_uuid:
+            log.info(f"QR decoded → UUID: {charger_uuid}")
             return lookup_charger_and_respond(user_id, state, charger_uuid)
-    # Could not decode QR — move to await_charger_id step
+
+    # Step 2: Try Claude vision OCR to read sticker text
+    log.info("QR decode failed — trying Claude vision OCR on image")
+    sticker_text = read_text_from_image(image_url)
+    if sticker_text:
+        # Check if it's a UUID or URL first
+        charger_uuid = extract_uuid_from_text(sticker_text)
+        if charger_uuid:
+            log.info(f"OCR found UUID: {charger_uuid}")
+            return lookup_charger_and_respond(user_id, state, charger_uuid)
+
+        # Search Ampcontrol by the text read from sticker
+        log.info(f"OCR read '{sticker_text}' — searching Ampcontrol by name")
+        charger = search_charger_by_name(sticker_text)
+        if charger:
+            charger_uuid = charger.get("id", "")
+            charger_name = charger.get("customName") or charger.get("name") or sticker_text
+            log.info(f"✅ Found charger '{charger_name}' via OCR name search")
+            return lookup_charger_and_respond(user_id, state, charger_uuid)
+
+        # OCR read text but charger not found in Ampcontrol
+        user_states[user_id] = {**state, "step": "await_charger_id"}
+        return (
+            f"📷 I can see *\"{sticker_text}\"* on your charger, "
+            f"but I couldn't find it in our system.\n\n"
+            f"Please check the name and try typing it, or send the "
+            f"*QR code* image from the charger instead. 😊"
+        )
+
+    # Step 3: Both QR and OCR failed
     user_states[user_id] = {**state, "step": "await_charger_id"}
     return (
-        "📷 I received your image but couldn't read the QR code. 😔\n\n"
-        "No problem! Please type the *Charger UUID* — you can find it by:\n\n"
-        "1️⃣ Go to **portal.ampcontrol.io**\n"
-        "2️⃣ Click on your charger\n"
-        "3️⃣ Go to *Settings*\n"
-        "4️⃣ Copy the *Charger UUID*\n\n"
-        "It looks like this: `6cd2389b-a278-5463-a8b2-f793603971b3`\n\n"
-        "Or try sending the QR code photo again with better lighting. 📷",
+        "📷 I received your image but couldn't read any charger information from it.\n\n"
+        "Please try one of these:\n\n"
+        "📷 Send a clearer photo of the *QR code* on the charger\n"
+        "📷 Send a photo of the *charger name sticker*\n"
+        "✍️ Type the *charger name* as shown on the unit\n\n"
+        "💡 _Tip: Make sure the image is well-lit and in focus._",
         get_media("charger_id_northgate")
     )
 
@@ -1168,8 +1274,11 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         if charger_uuid:
             return lookup_charger_and_respond(user_id, state, charger_uuid)
         return (
-            "Please send me the *QR code image* from your charger 📷\n\n"
-            "Or paste the *Ampcontrol link* or *Charger UUID* from the portal."
+            "Please send me a photo of:\n\n"
+            "📷 The *QR code* on the charger, or\n"
+            "📷 The *charger name sticker* on the unit\n\n"
+            "I'll read it automatically! 😊\n\n"
+            "Or type the *charger name* if you know it."
         )
 
     # ── Waiting for Charger UUID after QR failed ──────────────────────────────
@@ -1177,18 +1286,36 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         if has_media and received_media:
             return handle_qr_or_image(user_id, state, received_media, msg_raw)
 
-        # Check for UUID or Ampcontrol URL only
+        # Check for UUID or Ampcontrol URL
         charger_uuid = extract_uuid_from_text(msg_raw)
         if charger_uuid:
             return lookup_charger_and_respond(user_id, state, charger_uuid)
 
-        # Not a UUID — guide them clearly
+        # Search Ampcontrol by typed charger name
+        # Only if not a common greeting/question phrase
+        skip_words = set(CONFUSION_PHRASES + ["hi", "hello", "hey", "yes", "no",
+                                               "ok", "okay", "thanks", "thank you"])
+        if (len(msg_raw.strip()) >= 3 and
+                not any(w in msg.lower() for w in skip_words)):
+            charger = search_charger_by_name(msg_raw.strip())
+            if charger:
+                charger_uuid = charger.get("id", "")
+                log.info(f"Found charger by name: {charger.get('customName') or charger.get('name')}")
+                return lookup_charger_and_respond(user_id, state, charger_uuid)
+            return (
+                f"I searched for *\"{msg_raw.strip()}\"* but couldn't find a matching charger. 😔\n\n"
+                "Please try:\n"
+                "📷 Send a photo of the *QR code* on the charger\n"
+                "📷 Send a photo of the *charger name sticker*\n"
+                "✍️ Type the exact charger name as shown on the unit\n\n"
+                "Or type *AGENT* to speak to someone directly."
+            )
+
         return (
-            "I need the *Charger UUID* or *Ampcontrol link* to look up your charger. 😊\n\n"
-            "The easiest options:\n\n"
-            "📷 Send the *QR code image* from the charger\n"
-            "🔗 Paste the link from your browser:\n"
-            "`https://portal.ampcontrol.io/#/charger/.../overview`\n\n"
+            "Please send me a photo of the charger or type the charger name. 😊\n\n"
+            "📷 Photo of *QR code* — I'll scan it automatically\n"
+            "📷 Photo of *name sticker* — I'll read the text\n"
+            "✍️ Type the *charger name* as shown on the unit\n\n"
             "Or type *AGENT* to speak to someone directly."
         )
 
