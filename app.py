@@ -1689,11 +1689,46 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         description  = msg_raw.strip()
         charger_name = state.get("charger_name", "")
         charger_info = f" at *{charger_name}*" if charger_name else ""
+
+        # Check knowledge base first before escalating
+        ai_result = ask_claude(description)
+        intent    = ai_result.get("intent", "unclear") if ai_result else "unclear"
+
+        if intent == "general" and ai_result:
+            ai_reply = ai_result.get("reply", "")
+            user_states[user_id] = {**state, "step": "something_else_followup",
+                                     "extra_notes": description}
+            return (
+                f"{ai_reply}\n\n"
+                "---\n"
+                "Did this help?\n\n"
+                "✅ Type *RESOLVED* if your issue is sorted\n"
+                "👤 Type *AGENT* if you still need support"
+            )
+
+        # KB can't answer — escalate with description captured
         user_states[user_id] = {**state, "step": "start", "extra_notes": description}
-        return start_escalation(user_id, {**state, "extra_notes": description},
+        return start_escalation(
+            user_id,
+            {**state, "fault_type": "Other issue", "extra_notes": description},
             f"Thank you for describing the issue{charger_info}.\n\n"
             f"I have noted: *\"{description}\"*\n\n"
-            "Let me connect you with a support agent who can help.")
+            "Let me connect you with a support agent who can help."
+        )
+
+    if step == "something_else_followup":
+        if any(w in msg for w in ["resolved", "sorted", "fixed", "all good", "yes", "working"]):
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        elif any(w in msg for w in ["agent", "no", "still", "not resolved", "help"]):
+            return start_escalation(user_id, state,
+                "No problem, let me get an agent to assist you. 😊")
+        else:
+            return (
+                "Did that help?\n\n"
+                "✅ Type *RESOLVED* if your issue is sorted\n"
+                "👤 Type *AGENT* if you still need support"
+            )
 
 
 
