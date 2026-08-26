@@ -1455,16 +1455,47 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 log.info(f"Found charger by typed name: {charger.get('customName') or charger.get('name')}")
                 return lookup_charger_and_respond(user_id, state, charger_uuid)
 
-            # Not found in Ampcontrol — check KB before counting as failed attempt
+            # Not found in Ampcontrol — check intent before counting as failed attempt
             ai_result = ask_claude(msg_raw)
             intent = ai_result.get("intent", "unclear") if ai_result else "unclear"
+
             if intent == "general" and ai_result:
+                # KB can answer — reply and note that advice was given
                 ai_reply = ai_result.get("reply", "")
+                user_states[user_id] = {**state, "kb_answered": True}
                 return (
                     f"{ai_reply}\n\n"
                     "---\n"
                     "When you're ready, please send me your charger photo or type the charger name. 😊"
                 )
+
+            if intent in ["not_charging", "charger_fault", "charger_off", "slow_charging"]:
+                # Customer is describing a problem — not a charger name
+                if state.get("kb_answered", False):
+                    # Already gave advice and it didn't help → escalate
+                    return start_escalation(user_id, state,
+                        "I understand the issue is still ongoing. 😔\n\n"
+                        "Let me connect you with a support agent who can help directly.")
+                else:
+                    # First time — guide them to identify charger so we can help properly
+                    user_states[user_id] = {**state, "fault_hint": intent}
+                    return (
+                        "I'm sorry to hear that. 😔\n\n"
+                        "To help you properly, I need to check your charger's status "
+                        "and potentially restart it remotely.\n\n"
+                        "Please send me:\n"
+                        "📷 A photo of the *QR code* or *name sticker* on the charger\n"
+                        "✍️ Or type the *charger name* as shown on the unit"
+                    )
+
+            # Phrases indicating KB advice already failed → escalate
+            advice_failed = ["still stuck", "still not", "tried that", "didnt work",
+                             "didn't work", "i tried", "still happening", "already tried",
+                             "not working", "i just tried", "same problem"]
+            if state.get("kb_answered", False) and any(p in msg for p in advice_failed):
+                return start_escalation(user_id, state,
+                    "I understand the advice didn't resolve your issue. 😔\n\n"
+                    "Let me connect you with a support agent who can help directly.")
 
         # Track failed identification attempts (KB answers don't count)
         attempts = state.get("unrecognized_attempts", 0) + 1
