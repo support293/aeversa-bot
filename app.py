@@ -75,6 +75,17 @@ MID_FLOW_STEPS = {
     "something_else", "confirm_restart",
 }
 
+# Steps where the customer is specifically answering a YES/NO question
+# (used to phrase the "let's continue where we left off" message correctly)
+YES_NO_STEPS = [
+    "opt1_key_removed", "opt1_replug_fixed", "opt1_removed_key_try",
+    "opt1_error_check", "opt1_try_another_charger", "opt1_other_charger_working",
+    "opt2_power_on_site", "opt2_another_charger", "opt2_other_charger_works",
+    "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_after_wait",
+    "opt3_wattspot_replug", "opt3_other_final_restart",
+    "await_restart_result", "await_slow_restart_result",
+]
+
 # ── Media Library ─────────────────────────────────────────────────────────────
 # Media is served directly from the bot's own server (Render)
 # This is more reliable than GitHub raw URLs for Twilio media messages
@@ -1388,9 +1399,15 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         elif msg in ["no", "n", "nope"]:
             prev_step = state.get("prev_step", "start")
             user_states[user_id] = {**state, "step": prev_step}
+            if prev_step in YES_NO_STEPS:
+                return (
+                    "No problem! Let's continue where we left off.\n\n"
+                    "Please reply *YES* or *NO* to my previous question, "
+                    "or type *MENU* to start a new request."
+                )
             return (
                 "No problem! Let's continue where we left off.\n\n"
-                "Please reply *YES* or *NO* to my previous question, "
+                "Please reply to my previous message above, "
                 "or type *MENU* to start a new request."
             )
         else:
@@ -1400,13 +1417,6 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             )
 
     # ── Mid-flow new issue detection ──────────────────────────────────────────
-    YES_NO_STEPS = [
-        "opt1_key_removed", "opt1_replug_fixed", "opt1_removed_key_try",
-        "opt1_error_check", "opt1_try_another_charger", "opt1_other_charger_working",
-        "opt2_power_on_site", "opt2_another_charger", "opt2_other_charger_works",
-        "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_after_wait",
-        "opt3_wattspot_replug", "opt3_other_final_restart",
-    ]
     if step in YES_NO_STEPS and any(p in msg for p in NEW_ISSUE_PHRASES):
         user_states[user_id] = {**state, "step": "confirm_restart", "prev_step": step}
         return (
