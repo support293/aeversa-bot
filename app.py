@@ -790,6 +790,21 @@ def extract_charger_id_from_qr(qr_data: str) -> str | None:
     return None
 
 
+def contains_phrase(text: str, phrase: str) -> bool:
+    """
+    True if `phrase` appears in `text` as a whole word/phrase — not merely
+    as a substring. Prevents false positives like "hi" matching inside
+    "this", or "no" matching inside "know". Punctuation-only phrases (e.g.
+    "?") fall back to plain substring matching since word boundaries don't
+    apply meaningfully to them.
+    """
+    import re as _re
+    if not _re.search(r"\w", phrase):
+        return phrase in text
+    pattern = r"\b" + _re.escape(phrase) + r"\b"
+    return _re.search(pattern, text) is not None
+
+
 def extract_error_code(text: str) -> str | None:
     """Extracts a numeric error code from text like '76', 'error 76', 'error code 76'."""
     import re
@@ -1426,8 +1441,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         # Try Ampcontrol name search for typed text
         GREETING_WORDS = {"hi", "hello", "hey", "yes", "no", "ok", "okay",
                            "thanks", "thank you", "yo", "sup", "help"}
-        is_greeting = any(w in msg for w in GREETING_WORDS)
-        is_confused = any(p in msg for p in CONFUSION_PHRASES)
+        is_greeting = any(contains_phrase(msg, w) for w in GREETING_WORDS)
+        is_confused = any(contains_phrase(msg, p) for p in CONFUSION_PHRASES)
 
         if len(msg_raw.strip()) >= 3 and not is_greeting:
             # Only try the Ampcontrol name search if this doesn't read as a
@@ -1471,8 +1486,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
         GREETING_WORDS = {"hi", "hello", "hey", "yes", "no", "ok", "okay",
                            "thanks", "thank you", "yo", "sup", "help"}
-        is_greeting = any(w in msg for w in GREETING_WORDS)
-        is_confused = any(p in msg for p in CONFUSION_PHRASES)
+        is_greeting = any(contains_phrase(msg, w) for w in GREETING_WORDS)
+        is_confused = any(contains_phrase(msg, p) for p in CONFUSION_PHRASES)
 
         if len(msg_raw.strip()) >= 3 and not is_greeting:
 
@@ -1567,8 +1582,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         # Only if not a common greeting/question phrase
         GREETING_WORDS = {"hi", "hello", "hey", "yes", "no", "ok", "okay",
                            "thanks", "thank you"}
-        is_greeting = any(w in msg for w in GREETING_WORDS)
-        is_confused = any(p in msg for p in CONFUSION_PHRASES)
+        is_greeting = any(contains_phrase(msg, w) for w in GREETING_WORDS)
+        is_confused = any(contains_phrase(msg, p) for p in CONFUSION_PHRASES)
 
         if len(msg_raw.strip()) >= 3 and not is_greeting:
             # Only try the Ampcontrol name search if this doesn't read as a question
