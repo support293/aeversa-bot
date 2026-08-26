@@ -1321,13 +1321,31 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
     state = user_states[user_id]
 
     # ── Global Commands — these work from ANY step ────────────────────────────
-    # Greetings and menu always reset to start from anywhere
     GREETING_WORDS = {"menu", "start", "hi", "hello", "hey", "hiya", "howzit",
                       "yo", "sup", "good morning", "good afternoon", "good evening",
                       "good day", "morning", "afternoon"}
+
     if msg in GREETING_WORDS:
-        user_states[user_id] = {"step": "start", "last_activity": now}
-        return GREETING
+        if step in ["await_qr", "await_charger_id"]:
+            # Already greeted — just remind them what to send
+            return (
+                "😊 I'm still waiting for your charger details!\n\n"
+                "Please send me:\n"
+                "📷 A photo of the *QR code* on your charger, or\n"
+                "📷 A photo of the *charger name sticker*\n\n"
+                "Or simply type the charger name."
+            )
+        elif step not in ["start"]:
+            # Mid-flow — offer to restart
+            user_states[user_id] = {**state, "step": "confirm_restart", "prev_step": step}
+            return (
+                "👋 Hi! Would you like to *start a new support request*?\n\n"
+                "Reply *YES* to start fresh or *NO* to continue where we left off."
+            )
+        else:
+            # Fresh start
+            user_states[user_id] = {"step": "await_qr", "last_activity": now}
+            return GREETING
 
     # Agent request works from any step
     if msg in ["agent", "human", "person", "speak to someone"]:
