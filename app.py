@@ -1629,7 +1629,10 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 ai_reply = ai_result.get("reply", "")
                 return (
                     f"{ai_reply}\n\n"
-                    f"{issue_menu(charger_name, confirmed_online=False)}"
+                    "---\n"
+                    "Did this help? If you still need assistance:\n\n"
+                    "👤 Type *AGENT* to speak to a support agent\n"
+                    "🔄 Type *MENU* to start a new request"
                 )
             else:
                 # Capture description and escalate
