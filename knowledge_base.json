@@ -19,73 +19,73 @@
     {
       "code": "1",
       "meaning": "Charger stopped the session",
-      "customer_message": "Error 1 means the charger ended the session unexpectedly. Please unplug, wait 30 seconds, and try starting a new charging session. If it happens again, please contact support.",
+      "customer_message": "Error 1 means the charger ended the session unexpectedly. Please unplug, wait 30 seconds, and try starting a new charging session.",
       "self_service": true
     },
     {
       "code": "2",
       "meaning": "Vehicle requested to stop charging",
-      "customer_message": "Error 2 means your vehicle sent a signal to stop the charging session. This can happen if your vehicle's battery management system detected an issue. Please try unplugging and starting a new session. If the error repeats, please contact support.",
+      "customer_message": "Error 2 means your vehicle sent a signal to stop the charging session. This can happen if your vehicle's battery management system detected an issue. Please try unplugging and starting a new session.",
       "self_service": true
     },
     {
       "code": "10",
       "meaning": "Cable lock failed",
-      "customer_message": "Error 10 means the charger could not lock the cable connector properly. Please unplug the cable fully and reinsert it firmly. If the error appears again, please contact support as the connector may need inspection.",
+      "customer_message": "Error 10 means the charger could not lock the cable connector properly. Please unplug the cable fully and reinsert it firmly. If the error appears again, the connector may need inspection.",
       "self_service": true
     },
     {
       "code": "11",
       "meaning": "Charger overheated and stopped",
-      "customer_message": "Error 11 means the charger stopped because it got too hot. Please leave the charger to rest for at least 15 minutes to allow it to cool down, then try again. If this error keeps occurring, please contact support as the cooling system may need to be checked.",
+      "customer_message": "Error 11 means the charger stopped because it got too hot. Please leave the charger to rest for at least 15 minutes to allow it to cool down, then try again. If this error keeps occurring, the cooling system may need to be checked.",
       "self_service": true
     },
     {
       "code": "12",
       "meaning": "Communication timeout during startup",
-      "customer_message": "Error 12 means the charger and your vehicle could not complete their startup handshake in time. Please unplug, make sure your vehicle is switched off and key is removed, wait 30 seconds, and try again. If it persists, please contact support.",
+      "customer_message": "Error 12 means the charger and your vehicle could not complete their startup handshake in time. Please unplug, make sure your vehicle is switched off and key is removed, wait 30 seconds, and try again.",
       "self_service": true
     },
     {
       "code": "13",
       "meaning": "Battery parameter setup timeout",
-      "customer_message": "Error 13 means there was a timeout while the charger was reading your vehicle's battery settings. Please unplug, wait 30 seconds, and try again. If the error repeats, please contact support.",
+      "customer_message": "Error 13 means there was a timeout while the charger was reading your vehicle's battery settings. Please unplug, wait 30 seconds, and try again.",
       "self_service": true
     },
     {
       "code": "14",
       "meaning": "Vehicle not ready to charge timeout",
-      "customer_message": "Error 14 means your vehicle did not signal that it was ready to charge in time. Please unplug, ensure the vehicle is switched off with the key removed, wait 30 seconds, and try again. Contact support if the issue continues.",
+      "customer_message": "Error 14 means your vehicle did not signal that it was ready to charge in time. Please unplug, ensure the vehicle is switched off with the key removed, wait 30 seconds, and try again.",
       "self_service": true
     },
     {
       "code": "15",
       "meaning": "Charging session communication timeout",
-      "customer_message": "Error 15 means the communication between the charger and your vehicle was interrupted during the charging session. Please unplug, wait 30 seconds, and start a new session. Contact support if it keeps happening.",
+      "customer_message": "Error 15 means the communication between the charger and your vehicle was interrupted during the charging session. Please unplug, wait 30 seconds, and start a new session.",
       "self_service": true
     },
     {
       "code": "16",
       "meaning": "Vehicle charge request timeout",
-      "customer_message": "Error 16 means your vehicle stopped sending charge requests to the charger during the session. Please unplug, wait 30 seconds, and try again. If this error repeats, please contact support.",
+      "customer_message": "Error 16 means your vehicle stopped sending charge requests to the charger during the session. Please unplug, wait 30 seconds, and try again.",
       "self_service": true
     },
     {
       "code": "17",
       "meaning": "Vehicle sent a stop signal during charging",
-      "customer_message": "Error 17 means your vehicle's battery management system sent a stop signal during the session. Please unplug, wait 30 seconds, and try again. If the error continues, please contact support.",
+      "customer_message": "Error 17 means your vehicle's battery management system sent a stop signal during the session. Please unplug, wait 30 seconds, and try again.",
       "self_service": true
     },
     {
       "code": "19",
       "meaning": "Internal relay fault",
-      "customer_message": "Error 19 indicates an internal hardware fault on the charger. Please do not attempt to restart it yourself. Our support team will need to reboot the charger remotely. Please contact support immediately with your Charger ID.",
+      "customer_message": "Error 19 indicates an internal hardware fault on the charger. Please do not attempt to restart it yourself — our support team will need to reboot the charger remotely. Please send me your Charger ID so we can action this right away.",
       "self_service": false
     },
     {
       "code": "22",
       "meaning": "Retired error code — no longer in use",
-      "customer_message": "Error 22 is a retired code that is no longer in use on current charger firmware. Please contact support with your Charger ID so our team can investigate what triggered this on your unit.",
+      "customer_message": "Error 22 is a retired code that is no longer in use on current charger firmware. Please send me your Charger ID so our team can investigate what triggered this on your unit.",
       "self_service": false
     },
     {
@@ -97,19 +97,19 @@
     {
       "code": "26",
       "meaning": "Session start command timeout",
-      "customer_message": "Error 26 means the charger did not receive a start confirmation in time. Please unplug, wait 30 seconds, and try starting a new session. If it fails again, please contact support.",
+      "customer_message": "Error 26 means the charger did not receive a start confirmation in time. Please unplug, wait 30 seconds, and try starting a new session.",
       "self_service": true
     },
     {
       "code": "31",
       "meaning": "Charger has no output or insufficient power output",
-      "customer_message": "Error 31 means the charger is unable to deliver power. This may indicate a hardware issue with the unit. Please contact support with your Charger ID so we can investigate.",
+      "customer_message": "Error 31 means the charger is unable to deliver power. This may indicate a hardware issue with the unit. Please send me your Charger ID so we can investigate.",
       "self_service": false
     },
     {
       "code": "64",
       "meaning": "Vehicle battery parameters not compatible",
-      "customer_message": "Error 64 means the charger detected a mismatch with your vehicle's battery settings. Please contact support with your vehicle VIN and Charger ID so we can investigate the compatibility.",
+      "customer_message": "Error 64 means the charger detected a mismatch with your vehicle's battery settings. Please send me your vehicle VIN and Charger ID so we can investigate the compatibility.",
       "self_service": false
     },
     {
@@ -121,14 +121,14 @@
     {
       "code": "75",
       "meaning": "Retired error code — no longer in use",
-      "customer_message": "Error 75 is a retired code that is no longer in use on current charger firmware. Please contact support with your Charger ID so our team can investigate what triggered this on your unit.",
+      "customer_message": "Error 75 is a retired code that is no longer in use on current charger firmware. Please send me your Charger ID so our team can investigate what triggered this on your unit.",
       "self_service": false
     },
     {
       "code": "76",
       "meaning": "Insulation fault detected",
-      "customer_message": "Error 76 means the charger detected an insulation issue. Please unplug and try again. If the error appears a second time, please stop using this charger and contact support immediately with your Charger ID as this may be a safety-related fault.",
-      "self_service": true
+      "customer_message": "Error 76 means the charger detected an insulation issue. Please unplug and try again. If the error appears a second time, please stop using this charger — this may be a safety-related fault. Send me your Charger ID and I'll get our team onto it immediately.",
+      "self_service": false
     },
     {
       "code": "84",
@@ -139,19 +139,19 @@
     {
       "code": "85",
       "meaning": "Overcurrent or overvoltage detected",
-      "customer_message": "Error 85 means the charger detected an abnormal current or voltage level. Please stop using this charger immediately and contact support with your Charger ID. Do not attempt to restart until our team has investigated.",
+      "customer_message": "Error 85 means the charger detected an abnormal current or voltage level. Please stop using this charger immediately and send me your Charger ID. Do not attempt to restart until our team has investigated.",
       "self_service": false
     },
     {
       "code": "86",
       "meaning": "Low voltage detected",
-      "customer_message": "Error 86 means the charger detected a lower than expected voltage. Please contact support with your Charger ID so our team can investigate the power supply to this unit.",
+      "customer_message": "Error 86 means the charger detected a lower than expected voltage. Please send me your Charger ID so our team can investigate the power supply to this unit.",
       "self_service": false
     },
     {
       "code": "150",
       "meaning": "Vehicle reported a battery management fault",
-      "customer_message": "Error 150 means your vehicle's battery management system reported a fault to the charger. Please unplug and check your vehicle's dashboard for any warning lights. If your vehicle appears fine, try again. If the error repeats, please contact support with your vehicle VIN.",
+      "customer_message": "Error 150 means your vehicle's battery management system reported a fault to the charger. Please unplug and check your vehicle's dashboard for any warning lights. If your vehicle appears fine, try again. If the error repeats, have your vehicle VIN ready.",
       "self_service": true
     },
     {
@@ -163,7 +163,7 @@
     {
       "code": "152",
       "meaning": "Vehicle handshake response timeout",
-      "customer_message": "Error 152 means your vehicle did not respond to the charger's connection check in time. Please unplug, wait 30 seconds, and try again. If the error continues, please contact support.",
+      "customer_message": "Error 152 means your vehicle did not respond to the charger's connection check in time. Please unplug, wait 30 seconds, and try again.",
       "self_service": true
     },
     {
@@ -175,43 +175,43 @@
     {
       "code": "154",
       "meaning": "Vehicle charge request lost during session",
-      "customer_message": "Error 154 means your vehicle stopped sending charge requests during an active session. Please unplug, wait 30 seconds, and start a new session. Contact support if this keeps happening.",
+      "customer_message": "Error 154 means your vehicle stopped sending charge requests during an active session. Please unplug, wait 30 seconds, and start a new session.",
       "self_service": true
     },
     {
       "code": "155",
       "meaning": "Vehicle charging status lost during session",
-      "customer_message": "Error 155 means the charger lost track of your vehicle's battery status during the session. Please unplug, wait 30 seconds, and try again. Contact support if the issue continues.",
+      "customer_message": "Error 155 means the charger lost track of your vehicle's battery status during the session. Please unplug, wait 30 seconds, and try again.",
       "self_service": true
     },
     {
       "code": "156",
       "meaning": "Lost communication with vehicle battery management system",
-      "customer_message": "Error 156 means the charger lost communication with your vehicle's battery management system. Please unplug, make sure your vehicle is completely switched off and the key is removed, wait 60 seconds, and try again. If the error appears again, please contact support with your Charger ID and vehicle VIN.",
+      "customer_message": "Error 156 means the charger lost communication with your vehicle's battery management system. Please unplug, make sure your vehicle is completely switched off and the key is removed, wait 60 seconds, and try again. If the error appears again, have your Charger ID and vehicle VIN ready.",
       "self_service": true
     },
     {
       "code": "157",
       "meaning": "Vehicle fault detected",
-      "customer_message": "Error 157 means your vehicle reported a fault to the charger. Please check your vehicle's dashboard for any warning lights or error messages. If your vehicle appears to have a fault, please contact your fleet manager or vehicle service team. If the vehicle seems fine, please contact our support team with your vehicle VIN.",
+      "customer_message": "Error 157 means your vehicle reported a fault to the charger. Please check your vehicle's dashboard for any warning lights or error messages. If your vehicle appears to have a fault, please contact your fleet manager or vehicle service team. If the vehicle seems fine, please send me your vehicle VIN and we'll investigate.",
       "self_service": false
     },
     {
       "code": "158",
       "meaning": "Vehicle battery voltage mismatch",
-      "customer_message": "Error 158 means there is a discrepancy between the voltage your vehicle reported and what the charger measured. Please contact support with your Charger ID and vehicle VIN so our team can investigate.",
+      "customer_message": "Error 158 means there is a discrepancy between the voltage your vehicle reported and what the charger measured. Please send me your Charger ID and vehicle VIN so our team can investigate.",
       "self_service": false
     },
     {
       "code": "159",
       "meaning": "Charger hardware fault",
-      "customer_message": "Error 159 indicates a fault with the charging unit itself. Please contact support immediately with your Charger ID. Do not attempt to use this charger until our team has inspected it.",
+      "customer_message": "Error 159 indicates a fault with the charging unit itself. Please send me your Charger ID right away. Do not attempt to use this charger until our team has inspected it.",
       "self_service": false
     },
     {
       "code": "2048",
       "meaning": "Internal communication failure between charger components",
-      "customer_message": "Error 2048 means the internal components of the charger lost communication with each other. Please contact support with your Charger ID. Our team will need to remotely restart the unit. If after restarting the charger you do not hear the sound of the self-inspection (three click sounds from the unit), please let support know immediately.",
+      "customer_message": "Error 2048 means the internal components of the charger lost communication with each other. Please send me your Charger ID — our team will need to remotely restart the unit. If after restarting the charger you do not hear the sound of the self-inspection (three click sounds from the unit), please let us know immediately.",
       "self_service": false
     }
   ],
@@ -229,7 +229,7 @@
     {
       "category": "Starting a Charging Session",
       "question": "How do I find PnC or VIN on the charger screen?",
-      "answer": "After plugging in and seeing the red tick, tap *PnC or VIN* on the charger screen to start the session. If neither option appears, please contact support as your vehicle may not yet be registered on the system."
+      "answer": "After plugging in and seeing the red tick, tap *PnC or VIN* on the charger screen to start the session. If neither option appears, let me know and I'll get our team to check whether your vehicle is registered on the system."
     },
     {
       "category": "Starting a Charging Session",
@@ -254,12 +254,12 @@
     {
       "category": "Stopping a Charging Session",
       "question": "The stop button is not responding on the screen, what do I do?",
-      "answer": "Try tapping the screen twice again to wake it up, then look for the Stop button. If the screen is unresponsive, please contact support and we will stop the session remotely. Do not forcefully unplug the cable. Please have your Charger ID ready when you contact us."
+      "answer": "Try tapping the screen twice again to wake it up, then look for the Stop button. If the screen is unresponsive, let me know and we'll stop the session remotely for you — please have your Charger ID ready. Do not forcefully unplug the cable."
     },
     {
       "category": "Stopping a Charging Session",
       "question": "The session is still showing as active after I stopped it, is that normal?",
-      "answer": "It can take up to 2 minutes for the charger to fully close the session after you press stop. If the session still shows as active after 5 minutes, please contact support with your Charger ID and vehicle VIN so we can investigate."
+      "answer": "It can take up to 2 minutes for the charger to fully close the session after you press stop. If the session still shows as active after 5 minutes, let me know and have your Charger ID and vehicle VIN ready so we can investigate."
     },
     {
       "category": "Charging Speed & Performance",
@@ -284,12 +284,12 @@
     {
       "category": "Charger & Site",
       "question": "How do I know which charger to use at my depot?",
-      "answer": "Each charger at your depot has a unique Charger ID displayed on a sticker on the unit. Your fleet manager will advise on the correct charger allocation per vehicle. When contacting support, always have the Charger ID ready as it helps us identify and resolve issues faster."
+      "answer": "Each charger at your depot has a unique Charger ID displayed on a sticker on the unit. Your fleet manager will advise on the correct charger allocation per vehicle. Whenever you need help, have the Charger ID ready — it helps us identify and resolve issues faster."
     },
     {
       "category": "Charger & Site",
       "question": "Where do I find the Charger ID?",
-      "answer": "The Charger ID sticker is located on the front of the charger unit, underneath the screen. The charger type may look different depending on your site, but the sticker location is the same. Please have this ready whenever you contact support as it helps us locate and diagnose your specific charger quickly."
+      "answer": "The Charger ID sticker is located on the front of the charger unit, underneath the screen. The charger type may look different depending on your site, but the sticker location is the same. Please have this ready whenever you need help — it helps us locate and diagnose your specific charger quickly."
     },
     {
       "category": "Charger & Site",
@@ -299,7 +299,7 @@
     {
       "category": "Charger & Site",
       "question": "The cable is stuck and I cannot unplug it, what should I do?",
-      "answer": "Do not force the cable out. First make sure the charging session has been fully stopped on the charger screen by tapping twice then pressing Stop. Some vehicles lock the cable during an active session. If the session is stopped and the cable is still stuck, please contact support immediately and do not attempt to force the connector out as this may damage your vehicle or the charger."
+      "answer": "Don't worry — do not try to force the cable out! First make sure the charging session has been fully stopped on the charger screen by tapping it twice and pressing Stop, as most vehicles lock the cable during an active session. If the session is stopped and the cable is still stuck, let me know right away and we'll help you sort it — have your Charger ID ready so we can help you faster."
     },
     {
       "category": "Charger & Site",
@@ -309,7 +309,7 @@
     {
       "category": "Fleet Management",
       "question": "How do I report a vehicle that is consistently not charging properly?",
-      "answer": "Please contact support via the AE menu or email support@aeversa.co.za with the vehicle's VIN, the Charger ID it typically uses, and a description of the issue. Our team will investigate whether the fault is with the charger or the vehicle's charging port."
+      "answer": "You can report it right here — just type AGENT and share the vehicle's VIN, the Charger ID it typically uses, and a description of the issue. You can also email support@aeversa.co.za if that's easier. Our team will investigate whether the fault is with the charger or the vehicle's charging port."
     },
     {
       "category": "Fleet Management",
