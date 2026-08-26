@@ -2,7 +2,7 @@
   "company_info": {
     "name": "Aeversa (PTY) Ltd",
     "support_hours": "Monday - Friday: 07:00 - 19:00, Saturday: 08:00 - 14:00",
-    "support_email": "support@aeversa.co.za",
+    "support_email": "support@aeversa.com",
     "sales_contact": {
       "name": "John Ford",
       "email": "sales@aeversa.com",
@@ -309,22 +309,22 @@
     {
       "category": "Fleet Management",
       "question": "How do I report a vehicle that is consistently not charging properly?",
-      "answer": "You can report it right here — just type AGENT and share the vehicle's VIN, the Charger ID it typically uses, and a description of the issue. You can also email support@aeversa.co.za if that's easier. Our team will investigate whether the fault is with the charger or the vehicle's charging port."
+      "answer": "You can report it right here — just type AGENT and share the vehicle's VIN, the Charger ID it typically uses, and a description of the issue. You can also email support@aeversa.com if that's easier. Our team will investigate whether the fault is with the charger or the vehicle's charging port."
     },
     {
       "category": "Fleet Management",
       "question": "Can I get a report of charging sessions per vehicle?",
-      "answer": "Yes, charging session reports per vehicle are available through your Aeversa fleet management account. Please speak to your Aeversa account manager or email support@aeversa.co.za for assistance accessing your reports."
+      "answer": "Yes, charging session reports per vehicle are available through your Aeversa fleet management account. Please speak to your Aeversa account manager or email support@aeversa.com for assistance accessing your reports."
     },
     {
       "category": "Fleet Management",
       "question": "A new vehicle has been added to our fleet, how do we register it on the system?",
-      "answer": "New vehicles need to be registered on the Aeversa system before they can charge using the VIN start method. Please email support@aeversa.co.za with the vehicle's VIN, make, and model and we will get it added for you."
+      "answer": "New vehicles need to be registered on the Aeversa system before they can charge using the VIN start method. Please email support@aeversa.com with the vehicle's VIN, make, and model and we will get it added for you."
     },
     {
       "category": "Fleet Management",
       "question": "A vehicle has been removed from our fleet, how do we deregister it?",
-      "answer": "Please email support@aeversa.co.za with the vehicle's VIN and confirm that it should be removed from your fleet account. We will deactivate it from the system promptly."
+      "answer": "Please email support@aeversa.com with the vehicle's VIN and confirm that it should be removed from your fleet account. We will deactivate it from the system promptly."
     },
     {
       "category": "Fleet Management",
