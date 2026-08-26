@@ -654,11 +654,37 @@ def extract_uuid_from_text(text: str) -> str | None:
 
 
 def search_charger_by_name(name: str) -> dict | None:
-    """Searches Ampcontrol for a charger by name/custom name/ocppId."""
+    """
+    Searches Ampcontrol for a charger by name/custom name/ocppId.
+    Ampcontrol's search endpoint matches broadly across account/site
+    metadata, not just the charger's own name — so a generic term (e.g.
+    the company name) can return unrelated chargers. We only accept a
+    result if the search term genuinely appears in THAT charger's own
+    customName, name, or ocppId; otherwise we treat it as not found
+    rather than guessing.
+    """
     log.info(f"Searching Ampcontrol for charger by name: {name}")
     data = ampcontrol_get(f"/charge_points/?search={name}")
-    if data and data.get("data"):
-        return data["data"][0]
+    if not data or not data.get("data"):
+        return None
+
+    needle = name.strip().lower()
+    if not needle:
+        return None
+
+    for charger in data["data"]:
+        candidates = [
+            charger.get("customName", ""),
+            charger.get("name", ""),
+            charger.get("ocppId", ""),
+        ]
+        if any(needle in c.lower() for c in candidates if c):
+            return charger
+
+    log.warning(
+        f"Ampcontrol search for '{name}' returned {len(data['data'])} result(s) "
+        f"but none matched by charger name/ID — treating as not found"
+    )
     return None
 
 
