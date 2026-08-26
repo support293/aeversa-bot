@@ -1441,7 +1441,6 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         if charger_uuid:
             return lookup_charger_and_respond(user_id, state, charger_uuid)
 
-        # Skip common words and very short input
         skip_words = set(CONFUSION_PHRASES + [
             "hi", "hello", "hey", "yes", "no", "ok", "okay",
             "thanks", "thank you", "yo", "sup", "help"
@@ -1449,19 +1448,29 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         if (len(msg_raw.strip()) >= 3 and
                 not any(w in msg.lower() for w in skip_words)):
 
-            # Try Ampcontrol name search
+            # Try Ampcontrol name search first
             charger = search_charger_by_name(msg_raw.strip())
             if charger:
                 charger_uuid = charger.get("id", "")
                 log.info(f"Found charger by typed name: {charger.get('customName') or charger.get('name')}")
                 return lookup_charger_and_respond(user_id, state, charger_uuid)
 
-        # Track failed attempts
+            # Not found in Ampcontrol — check KB before counting as failed attempt
+            ai_result = ask_claude(msg_raw)
+            intent = ai_result.get("intent", "unclear") if ai_result else "unclear"
+            if intent == "general" and ai_result:
+                ai_reply = ai_result.get("reply", "")
+                return (
+                    f"{ai_reply}\n\n"
+                    "---\n"
+                    "When you're ready, please send me your charger photo or type the charger name. 😊"
+                )
+
+        # Track failed identification attempts (KB answers don't count)
         attempts = state.get("unrecognized_attempts", 0) + 1
         user_states[user_id] = {**state, "step": "await_qr",
                                   "unrecognized_attempts": attempts}
 
-        # After 3 failed attempts — escalate to agent
         if attempts >= 3:
             user_states[user_id] = {**state, "step": "start",
                                       "unrecognized_attempts": 0}
@@ -1469,7 +1478,6 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 "I'm having trouble identifying your charger. 😔\n\n"
                 "Let me connect you with a support agent who can help directly.")
 
-        # Still have attempts left — guide them clearly
         return (
             f"I couldn't find a charger matching that. 😔 "
             f"({3 - attempts} attempt{'s' if 3 - attempts != 1 else ''} remaining)\n\n"
@@ -2175,57 +2183,89 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
     # ══════════════════════════════════════════════════════════════════════════
 
     if step == "pre_escalate_site":
+        # Handle "I don't know" responses
+        unknown_phrases = ["dont know", "don't know", "not sure", "unsure",
+                           "no idea", "unknown", "i dont", "no clue", "cant tell"]
+        if any(phrase in msg for phrase in unknown_phrases):
+            user_states[user_id] = {**state, "step": "pre_escalate_charger_id",
+                                     "site": "Unknown"}
+            return (
+                "No problem! 😊\n\n"
+                "Can you find the *Charger ID* on the unit?\n\n"
+                "📍 The sticker is on the *front of the charger, underneath the screen.*\n\n"
+                "Please type it or send a photo of the sticker.",
+                get_media("charger_id_northgate")
+            )
         site = msg_raw.strip()
         user_states[user_id] = {**state, "step": "pre_escalate_charger_id", "site": site}
         return (
             f"Thank you — noted that you are at *{site}*.\n\n"
             "What is the *Charger ID*?\n\n"
             "📍 The sticker is on the *front of the charger, underneath the screen.*\n\n"
-            "Please type it below.",
+            "Please type it or send a photo of the sticker.",
             get_media("charger_id_northgate")
         )
 
     if step == "pre_escalate_charger_id":
-        # ── QR Code Detection ─────────────────────────────────────────────────
+        # ── Handle images — try QR then Claude OCR ────────────────────────────
         if has_media and received_media:
-            log.info(f"📷 Image received in charger ID step — attempting QR decode")
+            log.info("📷 Image received in charger ID step — trying QR then OCR")
+            # Try QR first
             qr_data = read_qr_code(received_media)
             if qr_data:
                 charger_id = extract_charger_id_from_qr(qr_data)
                 if charger_id:
-                    site       = state.get("site", "Not provided")
-                    fault_type = state.get("fault_type", "Not specified")
-                    error_code = state.get("error_code", "")
                     user_states[user_id] = {**state, "step": "start", "charger_id": charger_id}
-                    error_line = f"🔴 *Error Code:* {error_code}\n" if error_code else ""
                     return (
-                        f"✅ *QR code scanned successfully!*\n\n"
-                        f"I have identified your charger:\n\n"
-                        f"📍 *Site:* {site}\n"
-                        f"🔌 *Charger ID:* `{charger_id}`\n"
-                        f"⚠️ *Fault:* {fault_type}\n"
-                        f"{error_line}\n"
-                        f"Connecting you to our support team now.\n\n"
-                        f"{AGENT_INTRO}"
+                        f"✅ *QR code scanned!*\n\n"
+                        f"🔌 *Charger:* `{charger_id}`\n\n"
+                        f"Connecting you to our support team now.\n\n{AGENT_INTRO}"
                     )
-            # QR decode failed — ask them to type it instead
+            # Try Claude OCR on sticker
+            sticker_text = read_text_from_image(received_media)
+            if sticker_text:
+                # Search Ampcontrol by sticker text
+                charger = search_charger_by_name(sticker_text)
+                if charger:
+                    charger_id = charger.get("id", sticker_text)
+                    charger_name = charger.get("customName") or charger.get("name") or sticker_text
+                    user_states[user_id] = {**state, "step": "start",
+                                             "charger_id": charger_id,
+                                             "charger_name": charger_name}
+                    return (
+                        f"✅ *I found your charger from the sticker!*\n\n"
+                        f"🔌 *Charger:* {charger_name}\n\n"
+                        f"Connecting you to our support team now.\n\n{AGENT_INTRO}"
+                    )
+                # OCR read text but not found in Ampcontrol — use as charger ID
+                user_states[user_id] = {**state, "step": "start", "charger_id": sticker_text}
+                return (
+                    f"Thank you. I read *\"{sticker_text}\"* from your image.\n\n"
+                    f"Connecting you to our support team now.\n\n{AGENT_INTRO}"
+                )
+            # Both failed
             return (
-                "📷 I received your image but couldn't read a QR code from it.\n\n"
-                "Please type the *Charger ID* manually.\n\n"
-                "📍 The sticker is on the *front of the charger, underneath the screen.*",
-                get_media("charger_id_northgate")
+                "📷 I received your image but couldn't read the charger details from it.\n\n"
+                "Please *type the Charger ID* as shown on the sticker, or type *AGENT* "
+                "to connect directly."
             )
+
+        # ── Handle "I don't know" for charger ID ─────────────────────────────
+        unknown_phrases = ["dont know", "don't know", "not sure", "unsure",
+                           "no idea", "unknown", "i dont", "cant find", "no sticker"]
+        if any(phrase in msg for phrase in unknown_phrases):
+            user_states[user_id] = {**state, "step": "start", "charger_id": "Unknown"}
+            return start_escalation(user_id, {**state, "charger_id": "Unknown"},
+                "No problem! Our agent will help identify the charger. 😊")
 
         # ── Question/confusion detection ──────────────────────────────────────
         if any(phrase in msg for phrase in CONFUSION_PHRASES):
             return (
                 "📍 The *Charger ID* sticker is on the *front of the charger, "
                 "underneath the screen.*\n\n"
-                "It is a combination of letters and numbers — for example *CPO-001* "
-                "or *AE-12345*.\n\n"
-                "💡 *Tip:* You can also scan the *QR code* on the charger and send "
-                "me the image — I'll read it automatically! 📷\n\n"
-                "Please type the Charger ID or send the QR code image. 😊",
+                "It is a combination of letters and numbers.\n\n"
+                "💡 You can also send a *photo of the sticker* — I'll read it! 📷\n\n"
+                "Or type *AGENT* to skip this and speak to someone directly.",
                 get_media("charger_id_northgate")
             )
 
