@@ -878,7 +878,7 @@ AGENT_INTRO = (
     "Monday – Friday: 07:00 – 19:00\n"
     "Saturday: 08:00 – 14:00\n\n"
     "For urgent faults outside these hours, please email:\n"
-    "📧 *support@aeversa.co.za*"
+    "📧 *support@aeversa.com*"
 )
 
 FALLBACK = (
@@ -1415,17 +1415,32 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return lookup_charger_and_respond(user_id, state, charger_uuid)
 
         # Try Ampcontrol name search for typed text
-        skip_words = set(CONFUSION_PHRASES + [
-            "hi", "hello", "hey", "yes", "no", "ok", "okay",
-            "thanks", "thank you", "yo", "sup", "help"
-        ])
-        if (len(msg_raw.strip()) >= 3 and
-                not any(w in msg.lower() for w in skip_words)):
-            charger = search_charger_by_name(msg_raw.strip())
-            if charger:
-                charger_uuid = charger.get("id", "")
-                log.info(f"Found charger by typed name at start: {charger.get('customName') or charger.get('name')}")
-                return lookup_charger_and_respond(user_id, state, charger_uuid)
+        GREETING_WORDS = {"hi", "hello", "hey", "yes", "no", "ok", "okay",
+                           "thanks", "thank you", "yo", "sup", "help"}
+        is_greeting = any(w in msg for w in GREETING_WORDS)
+        is_confused = any(p in msg for p in CONFUSION_PHRASES)
+
+        if len(msg_raw.strip()) >= 3 and not is_greeting:
+            # Only try the Ampcontrol name search if this doesn't read as a
+            # question — no point searching "where do i find X" as a charger name
+            if not is_confused:
+                charger = search_charger_by_name(msg_raw.strip())
+                if charger:
+                    charger_uuid = charger.get("id", "")
+                    log.info(f"Found charger by typed name at start: {charger.get('customName') or charger.get('name')}")
+                    return lookup_charger_and_respond(user_id, state, charger_uuid)
+
+            # Not found in Ampcontrol, or looked like a question — check the KB
+            ai_result = ask_claude(msg_raw)
+            intent = ai_result.get("intent", "unclear") if ai_result else "unclear"
+            if intent == "general" and ai_result:
+                ai_reply = ai_result.get("reply", "")
+                user_states[user_id] = {**state, "step": "await_qr", "kb_answered": True}
+                return (
+                    f"{ai_reply}\n\n"
+                    "---\n"
+                    "When you're ready, please send me your charger photo or type the charger name. 😊"
+                )
 
         # EVERYTHING ELSE — show greeting and move to await_qr
         user_states[user_id] = {"step": "await_qr"}
@@ -1441,21 +1456,23 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         if charger_uuid:
             return lookup_charger_and_respond(user_id, state, charger_uuid)
 
-        skip_words = set(CONFUSION_PHRASES + [
-            "hi", "hello", "hey", "yes", "no", "ok", "okay",
-            "thanks", "thank you", "yo", "sup", "help"
-        ])
-        if (len(msg_raw.strip()) >= 3 and
-                not any(w in msg.lower() for w in skip_words)):
+        GREETING_WORDS = {"hi", "hello", "hey", "yes", "no", "ok", "okay",
+                           "thanks", "thank you", "yo", "sup", "help"}
+        is_greeting = any(w in msg for w in GREETING_WORDS)
+        is_confused = any(p in msg for p in CONFUSION_PHRASES)
 
-            # Try Ampcontrol name search first
-            charger = search_charger_by_name(msg_raw.strip())
-            if charger:
-                charger_uuid = charger.get("id", "")
-                log.info(f"Found charger by typed name: {charger.get('customName') or charger.get('name')}")
-                return lookup_charger_and_respond(user_id, state, charger_uuid)
+        if len(msg_raw.strip()) >= 3 and not is_greeting:
 
-            # Not found in Ampcontrol — check intent before counting as failed attempt
+            # Only try the Ampcontrol name search if this doesn't read as a
+            # question — no point searching "where do i find X" as a charger name
+            if not is_confused:
+                charger = search_charger_by_name(msg_raw.strip())
+                if charger:
+                    charger_uuid = charger.get("id", "")
+                    log.info(f"Found charger by typed name: {charger.get('customName') or charger.get('name')}")
+                    return lookup_charger_and_respond(user_id, state, charger_uuid)
+
+            # Not found in Ampcontrol, or looked like a question — check intent
             ai_result = ask_claude(msg_raw)
             intent = ai_result.get("intent", "unclear") if ai_result else "unclear"
 
@@ -1531,23 +1548,41 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
         # Search Ampcontrol by typed charger name
         # Only if not a common greeting/question phrase
-        skip_words = set(CONFUSION_PHRASES + ["hi", "hello", "hey", "yes", "no",
-                                               "ok", "okay", "thanks", "thank you"])
-        if (len(msg_raw.strip()) >= 3 and
-                not any(w in msg.lower() for w in skip_words)):
-            charger = search_charger_by_name(msg_raw.strip())
-            if charger:
-                charger_uuid = charger.get("id", "")
-                log.info(f"Found charger by name: {charger.get('customName') or charger.get('name')}")
-                return lookup_charger_and_respond(user_id, state, charger_uuid)
-            return (
-                f"I searched for *\"{msg_raw.strip()}\"* but couldn't find a matching charger. 😔\n\n"
-                "Please try:\n"
-                "📷 Send a photo of the *QR code* on the charger\n"
-                "📷 Send a photo of the *charger name sticker*\n"
-                "✍️ Type the exact charger name as shown on the unit\n\n"
-                "Or type *AGENT* to speak to someone directly."
-            )
+        GREETING_WORDS = {"hi", "hello", "hey", "yes", "no", "ok", "okay",
+                           "thanks", "thank you"}
+        is_greeting = any(w in msg for w in GREETING_WORDS)
+        is_confused = any(p in msg for p in CONFUSION_PHRASES)
+
+        if len(msg_raw.strip()) >= 3 and not is_greeting:
+            # Only try the Ampcontrol name search if this doesn't read as a question
+            if not is_confused:
+                charger = search_charger_by_name(msg_raw.strip())
+                if charger:
+                    charger_uuid = charger.get("id", "")
+                    log.info(f"Found charger by name: {charger.get('customName') or charger.get('name')}")
+                    return lookup_charger_and_respond(user_id, state, charger_uuid)
+
+            # Not found in Ampcontrol, or looked like a question — check the KB
+            ai_result = ask_claude(msg_raw)
+            intent = ai_result.get("intent", "unclear") if ai_result else "unclear"
+            if intent == "general" and ai_result:
+                ai_reply = ai_result.get("reply", "")
+                user_states[user_id] = {**state, "kb_answered": True}
+                return (
+                    f"{ai_reply}\n\n"
+                    "---\n"
+                    "When you're ready, please send me your charger photo or type the charger name. 😊"
+                )
+
+            if not is_confused:
+                return (
+                    f"I searched for *\"{msg_raw.strip()}\"* but couldn't find a matching charger. 😔\n\n"
+                    "Please try:\n"
+                    "📷 Send a photo of the *QR code* on the charger\n"
+                    "📷 Send a photo of the *charger name sticker*\n"
+                    "✍️ Type the exact charger name as shown on the unit\n\n"
+                    "Or type *AGENT* to speak to someone directly."
+                )
 
         return (
             "Please send me a photo of the charger or type the charger name. 😊\n\n"
