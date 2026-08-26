@@ -1503,7 +1503,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 return (
                     f"{ai_reply}\n\n"
                     "---\n"
-                    "When you're ready, please send me your charger photo or type the charger name. 😊"
+                    "Did that answer your question? 😊 If you still need help with a specific charger, "
+                    "just send me a photo of the QR code or sticker, or type the charger name — "
+                    "otherwise you're all set!"
                 )
 
         # EVERYTHING ELSE — show greeting and move to await_qr
@@ -1551,7 +1553,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 return (
                     f"{ai_reply}\n\n"
                     "---\n"
-                    "When you're ready, please send me your charger photo or type the charger name. 😊"
+                    "Did that answer your question? 😊 If you still need help with a specific charger, "
+                    "just send me a photo of the QR code or sticker, or type the charger name — "
+                    "otherwise you're all set!"
                 )
 
             if intent in ["not_charging", "charger_fault", "charger_off", "slow_charging"]:
@@ -1643,7 +1647,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 return (
                     f"{ai_reply}\n\n"
                     "---\n"
-                    "When you're ready, please send me your charger photo or type the charger name. 😊"
+                    "Did that answer your question? 😊 If you still need help with a specific charger, "
+                    "just send me a photo of the QR code or sticker, or type the charger name — "
+                    "otherwise you're all set!"
                 )
 
             if not is_confused:
@@ -1781,9 +1787,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 return (
                     f"{ai_reply}\n\n"
                     "---\n"
-                    "Did this help? If you still need assistance:\n\n"
-                    "👤 Type *AGENT* to speak to a support agent\n"
-                    "🔄 Type *MENU* to start a new request"
+                    "Did that help? 😊 If not, just tell me a bit more and I'll keep helping."
                 )
             else:
                 # Capture description and escalate
