@@ -240,23 +240,19 @@ def check_session_timeouts():
     """
     Checks all active sessions for timeouts:
     - 10 minutes mid-flow → notify agents + send customer reminder
-    - 2 hours any session → silently reset to start
+    - 2 hours any session → reset session + send fresh greeting to customer
     """
     now = datetime.now().timestamp()
     for user_id, state in list(user_states.items()):
 
-        # Skip agent numbers
         if user_id in AGENT_NUMBERS:
             continue
-
-        # Skip paused customers — agent has taken over
         if is_paused(user_id):
             continue
 
         step          = state.get("step", "start")
         last_activity = state.get("last_activity", 0)
 
-        # Skip sessions with no recorded activity
         if last_activity == 0:
             continue
 
@@ -264,8 +260,16 @@ def check_session_timeouts():
 
         # ── 2 Hour Session Reset ──────────────────────────────────────────────
         if elapsed > SESSION_RESET_SECS:
-            log.info(f"🔄 Session reset for {user_id} — inactive for {elapsed/3600:.1f}h")
+            log.info(f"🔄 Session reset for {user_id} — inactive {elapsed/3600:.1f}h")
             user_states[user_id] = {"step": "start", "last_activity": 0}
+            # Send fresh greeting so customer knows to start again
+            if step in MID_FLOW_STEPS:
+                send_whatsapp_message(
+                    user_id,
+                    "👋 Your previous support session has ended after 2 hours of inactivity.\n\n"
+                    "If you still need help, please send a photo of your charger QR code "
+                    "or sticker and I'll assist you right away! ⚡"
+                )
             continue
 
         # ── 10 Minute Mid-Flow Escalation ────────────────────────────────────
@@ -273,26 +277,26 @@ def check_session_timeouts():
                 and step in MID_FLOW_STEPS
                 and not state.get("timeout_escalated", False)):
 
-            log.info(f"⏰ Timeout escalation for {user_id} — {elapsed/60:.0f}min in step '{step}'")
+            log.info(f"⏰ Timeout escalation for {user_id} — {elapsed/60:.0f}min in '{step}'")
 
-            # Mark as escalated so we don't send again
             user_states[user_id] = {**state, "timeout_escalated": True}
 
             # Notify agents
             notify_agents(user_id, {
                 **state,
-                "fault_type": state.get("fault_type", "Unknown"),
-                "extra_notes": f"⏰ No customer response for {elapsed/60:.0f} minutes (step: {step})"
+                "fault_type":  state.get("fault_type", "Unknown"),
+                "extra_notes": f"⏰ No response for {elapsed/60:.0f} minutes — step: {step}"
             })
 
-            # Send gentle reminder to customer
-            clean_num = user_id.replace("whatsapp:", "")
+            # Send reminder to customer
             send_whatsapp_message(
                 user_id,
                 "⏰ Hi! Just checking in — it looks like you may still need help. 😊\n\n"
-                "Please reply *YES* or *NO* to continue, or type *MENU* to start a new request.\n\n"
-                "If your issue is resolved, no action needed! ✅"
+                "If your issue is *resolved*, no action needed! ✅\n\n"
+                "If you still need assistance, please reply *YES* or *NO*, "
+                "or type *MENU* to start a new request."
             )
+            log.info(f"✅ Timeout notifications sent for {user_id}")
 
 
 def start_timeout_checker():
@@ -1299,17 +1303,30 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
     # ── Record activity timestamp + clear timeout flag on any response ────────
     now = datetime.now().timestamp()
+    last_activity = state.get("last_activity", 0)
+
+    # ── Timestamp-based session reset (belt & suspenders with background checker)
+    # If more than 2 hours have passed since last activity, reset the session
+    if last_activity > 0 and (now - last_activity) > SESSION_RESET_SECS:
+        log.info(f"Session reset on message receipt for {user_id} — inactive for {(now - last_activity)/3600:.1f}h")
+        user_states[user_id] = {"step": "start", "last_activity": now}
+        state = user_states[user_id]
+        step  = "start"
+
     user_states[user_id] = {
         **state,
-        "last_activity":    now,
-        "timeout_escalated": False,   # reset so we can escalate again if needed
+        "last_activity":     now,
+        "timeout_escalated": False,
     }
     state = user_states[user_id]
 
     # ── Global Commands — these work from ANY step ────────────────────────────
-    # MENU resets to start from anywhere
-    if msg in ["menu", "start"]:
-        user_states[user_id] = {"step": "start"}
+    # Greetings and menu always reset to start from anywhere
+    GREETING_WORDS = {"menu", "start", "hi", "hello", "hey", "hiya", "howzit",
+                      "yo", "sup", "good morning", "good afternoon", "good evening",
+                      "good day", "morning", "afternoon"}
+    if msg in GREETING_WORDS:
+        user_states[user_id] = {"step": "start", "last_activity": now}
         return GREETING
 
     # Agent request works from any step
@@ -1318,7 +1335,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
     # Sales request works from any step
     if msg in ["sales", "sales rep", "sales agent"]:
-        user_states[user_id] = {"step": "start"}
+        user_states[user_id] = {"step": "start", "last_activity": now}
         return sales_redirect_message()
 
     # ── Confirm restart step ──────────────────────────────────────────────────
