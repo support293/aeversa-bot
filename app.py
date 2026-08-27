@@ -988,7 +988,7 @@ NEGATIVE_PHRASES = [
     "3 times", "4 times", "many times", "keeps happening",
     "still showing", "still offline", "still slow", "still not charging",
     "not helping", "didn't help", "did not help", "no luck",
-    "tried again", "tried it again",
+    "tried again", "tried it again", "not resolved", "not sorted",
 ]
 
 NEW_ISSUE_PHRASES = [
@@ -1021,10 +1021,14 @@ def interpret_response(msg: str, context: str) -> str:
     if msg_lower in ["no", "n", "nope", "nah", "negative", "nee", "nada"]:
         return "no"
 
-    if any(p in msg_lower for p in POSITIVE_PHRASES):
-        return "yes"
+    # Check negative phrases FIRST — a negation like "not resolved" or
+    # "not fixed" contains a positive word as a substring ("resolved",
+    # "fixed"), so it must be checked before the positive-phrase pass
+    # or the negation gets silently missed.
     if any(p in msg_lower for p in NEGATIVE_PHRASES):
         return "no"
+    if any(p in msg_lower for p in POSITIVE_PHRASES):
+        return "yes"
     if any(p in msg_lower for p in NEW_ISSUE_PHRASES):
         return "new_issue"
     if any(p in msg_lower for p in CONFUSION_PHRASES):
@@ -1928,18 +1932,19 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         )
 
     if step == "something_else_followup":
-        if any(w in msg for w in ["resolved", "sorted", "fixed", "all good", "yes", "working"]):
+        QUESTION = "Did that help?"
+        def yes_fn():
             user_states[user_id] = {"step": "start"}
             return GREAT_NEWS
-        elif any(w in msg for w in ["agent", "no", "still", "not resolved", "help"]):
+        def no_fn():
             return start_escalation(user_id, state,
                 "No problem, let me get an agent to assist you. 😊")
+        if msg in ["resolved", "yes"]:
+            return yes_fn()
+        elif msg in ["agent", "no"]:
+            return no_fn()
         else:
-            return (
-                "Did that help?\n\n"
-                "✅ Type *RESOLVED* if your issue is sorted\n"
-                "👤 Type *AGENT* if you still need support"
-            )
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
 
 
 
