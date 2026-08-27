@@ -1477,7 +1477,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         # Try Ampcontrol name search for typed text
         GREETING_WORDS = {"hi", "hello", "hey", "yes", "no", "ok", "okay",
                            "thanks", "thank you", "yo", "sup", "help"}
-        is_greeting = any(contains_phrase(msg, w) for w in GREETING_WORDS)
+        is_greeting = msg.strip(' .!?').lower() in GREETING_WORDS
         is_confused = any(contains_phrase(msg, p) for p in CONFUSION_PHRASES)
 
         if len(msg_raw.strip()) >= 3 and not is_greeting:
@@ -1508,6 +1508,10 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     "otherwise you're all set!"
                 )
 
+            if intent == "agent" and ai_result:
+                ai_reply = ai_result.get("reply", "")
+                return start_escalation(user_id, state, ai_reply)
+
         # EVERYTHING ELSE — show greeting and move to await_qr
         user_states[user_id] = {"step": "await_qr"}
         return (GREETING, get_media("charger_id_northgate"))
@@ -1524,7 +1528,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
         GREETING_WORDS = {"hi", "hello", "hey", "yes", "no", "ok", "okay",
                            "thanks", "thank you", "yo", "sup", "help"}
-        is_greeting = any(contains_phrase(msg, w) for w in GREETING_WORDS)
+        is_greeting = msg.strip(' .!?').lower() in GREETING_WORDS
         is_confused = any(contains_phrase(msg, p) for p in CONFUSION_PHRASES)
 
         if len(msg_raw.strip()) >= 3 and not is_greeting:
@@ -1557,6 +1561,10 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     "just send me a photo of the QR code or sticker, or type the Charger ID — "
                     "otherwise you're all set!"
                 )
+
+            if intent == "agent" and ai_result:
+                ai_reply = ai_result.get("reply", "")
+                return start_escalation(user_id, state, ai_reply)
 
             if intent in ["not_charging", "charger_fault", "charger_off", "slow_charging"]:
                 # Customer is describing a problem — not a charger name
@@ -1622,7 +1630,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         # Only if not a common greeting/question phrase
         GREETING_WORDS = {"hi", "hello", "hey", "yes", "no", "ok", "okay",
                            "thanks", "thank you"}
-        is_greeting = any(contains_phrase(msg, w) for w in GREETING_WORDS)
+        is_greeting = msg.strip(' .!?').lower() in GREETING_WORDS
         is_confused = any(contains_phrase(msg, p) for p in CONFUSION_PHRASES)
 
         if len(msg_raw.strip()) >= 3 and not is_greeting:
@@ -1651,6 +1659,10 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     "just send me a photo of the QR code or sticker, or type the Charger ID — "
                     "otherwise you're all set!"
                 )
+
+            if intent == "agent" and ai_result:
+                ai_reply = ai_result.get("reply", "")
+                return start_escalation(user_id, state, ai_reply)
 
             if not is_confused:
                 return (
