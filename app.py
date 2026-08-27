@@ -1163,6 +1163,7 @@ Where "intent" is ONE of:
 - "charger_off" — if the charger screen is blank, off, or the unit appears to have no power
 - "slow_charging" — if a charging session IS active but the speed is slower than expected
 - "charger_fault" — if the customer says the charger is not working, broken, faulty, has a problem, or is giving issues in a general sense without specifying vehicle not charging, screen off, or slow speed
+- "no_charger_id" — if the customer says there is no Charger ID sticker, no visible label, or they cannot find any identifying marking on the charger at all (e.g. "there's no sticker", "I can't find a Charger ID")
 - "agent" — if the customer explicitly wants a human agent, or has an account/complaint issue that cannot be resolved with FAQ information
 - "sales" — if the customer is asking about new charger installations, fleet expansion, partnerships, or business pricing
 - "general" — use this for ANY question that can be answered using the FAQ knowledge base below, including: how to start a session, how to stop a session, stuck cables, error messages on screen, VIN start process, red tick questions, how to register a vehicle, session reports, and any other how-to or informational question
@@ -1171,6 +1172,7 @@ Where "intent" is ONE of:
 
 IMPORTANT ROUTING RULES:
 - "Charger is not working" / "charger is broken" / "charger has a problem" / "charger giving issues" = "charger_fault"
+- "There's no sticker" / "no Charger ID on it" / "can't find a sticker" = "no_charger_id" (NOT "general" — this needs a state change, not just an FAQ answer)
 - "Cable is stuck" or "cannot unplug" = "general" (answer from KB, NOT "not_charging")
 - "Error message on screen" = "general" (answer from KB, NOT "not_charging")
 - "How do I start charging" = "general" (answer from KB)
@@ -1183,7 +1185,7 @@ IMPORTANT ROUTING RULES:
 
 If intent is "not_charging", "charger_off", or "slow_charging", set "reply" to a short one-sentence warm acknowledgment of their specific issue.
 
-If intent is "agent", set "reply" to a short one-sentence acknowledgment.
+If intent is "agent" or "no_charger_id", set "reply" to a short one-sentence acknowledgment.
 
 If intent is "sales", set "reply" to "" (empty string).
 
@@ -1512,6 +1514,19 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 ai_reply = ai_result.get("reply", "")
                 return start_escalation(user_id, state, ai_reply)
 
+            if intent == "no_charger_id" and ai_result:
+                # Customer has no sticker/QR to identify the charger with —
+                # move into the site-collection flow so their next message
+                # (e.g. a site name) is actually captured, instead of being
+                # re-checked as if it were a charger name/ID again.
+                user_states[user_id] = {**state, "step": "pre_escalate_site"}
+                return (
+                    "No worries! Could you please send a photo of the *QR code* "
+                    "on the charger instead? If there's no QR code either, just let "
+                    "me know which *site or depot* you're at and I'll get our team "
+                    "to help identify the correct charger for you. 😊"
+                )
+
         # EVERYTHING ELSE — show greeting and move to await_qr
         user_states[user_id] = {"step": "await_qr"}
         return (GREETING, get_media("charger_id_northgate"))
@@ -1565,6 +1580,19 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             if intent == "agent" and ai_result:
                 ai_reply = ai_result.get("reply", "")
                 return start_escalation(user_id, state, ai_reply)
+
+            if intent == "no_charger_id" and ai_result:
+                # Customer has no sticker/QR to identify the charger with —
+                # move into the site-collection flow so their next message
+                # (e.g. a site name) is actually captured, instead of being
+                # re-checked as if it were a charger name/ID again.
+                user_states[user_id] = {**state, "step": "pre_escalate_site"}
+                return (
+                    "No worries! Could you please send a photo of the *QR code* "
+                    "on the charger instead? If there's no QR code either, just let "
+                    "me know which *site or depot* you're at and I'll get our team "
+                    "to help identify the correct charger for you. 😊"
+                )
 
             if intent in ["not_charging", "charger_fault", "charger_off", "slow_charging"]:
                 # Customer is describing a problem — not a charger name
@@ -1663,6 +1691,19 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             if intent == "agent" and ai_result:
                 ai_reply = ai_result.get("reply", "")
                 return start_escalation(user_id, state, ai_reply)
+
+            if intent == "no_charger_id" and ai_result:
+                # Customer has no sticker/QR to identify the charger with —
+                # move into the site-collection flow so their next message
+                # (e.g. a site name) is actually captured, instead of being
+                # re-checked as if it were a charger name/ID again.
+                user_states[user_id] = {**state, "step": "pre_escalate_site"}
+                return (
+                    "No worries! Could you please send a photo of the *QR code* "
+                    "on the charger instead? If there's no QR code either, just let "
+                    "me know which *site or depot* you're at and I'll get our team "
+                    "to help identify the correct charger for you. 😊"
+                )
 
             if not is_confused:
                 return (
@@ -2345,6 +2386,29 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
     # ══════════════════════════════════════════════════════════════════════════
 
     if step == "pre_escalate_site":
+        # If they send a photo here (QR/sticker), try to identify the charger
+        # directly first — if it works, they can skip escalation entirely
+        if has_media and received_media:
+            log.info("📷 Image received while asking for site — trying QR/OCR first")
+            qr_data = read_qr_code(received_media)
+            if qr_data:
+                charger_uuid = extract_charger_id_from_qr(qr_data)
+                if charger_uuid:
+                    return lookup_charger_and_respond(user_id, state, charger_uuid)
+            sticker_text = read_text_from_image(received_media)
+            if sticker_text:
+                charger = search_charger_by_name(sticker_text)
+                if charger:
+                    charger_uuid = charger.get("id", "")
+                    return lookup_charger_and_respond(user_id, state, charger_uuid)
+            # Couldn't read it — fall back to asking for the site as text
+            return (
+                "📷 I received your photo but couldn't read a QR code or "
+                "charger name from it. 😔\n\n"
+                "No problem — which *site or depot* are you at? I'll get our "
+                "team to help identify the correct charger."
+            )
+
         # Handle "I don't know" responses
         unknown_phrases = ["dont know", "don't know", "not sure", "unsure",
                            "no idea", "unknown", "i dont", "no clue", "cant tell"]
