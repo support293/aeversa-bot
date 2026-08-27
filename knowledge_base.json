@@ -293,11 +293,6 @@
     },
     {
       "category": "Charger & Site",
-      "question": "There is no Charger ID sticker on my charger, what should I do?",
-      "answer": "No problem! If there's no sticker, please send a photo of the QR code on the charger instead — I can identify your charger from that. If there's no QR code either, just let me know the site you're at and I'll get our team to help identify the correct charger."
-    },
-    {
-      "category": "Charger & Site",
       "question": "The charger screen is blank or off, what should I do?",
       "answer": "Please select option 2 from the AE support menu and AE will guide you through checking whether this is a power issue at the site or a fault with the specific unit."
     },
