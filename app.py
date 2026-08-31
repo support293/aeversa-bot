@@ -67,7 +67,7 @@ MID_FLOW_STEPS = {
     "opt1_key_removed", "opt1_replug_fixed", "opt1_removed_key_try",
     "opt1_error_check", "opt1_try_another_charger", "opt1_other_charger_working",
     "opt2_power_on_site", "opt2_another_charger", "opt2_other_charger_works",
-    "opt2_slow_confirm_stopped",
+    "opt2_slow_confirm_stopped", "opt2_slow_await_screen_off",
     "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_wifi",
     "opt3_wattspot_replug", "opt3_other_4g", "opt3_other_final_restart",
     "await_restart_result", "await_slow_restart_result",
@@ -1929,27 +1929,47 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
     # ── Slow charging — waiting for customer to confirm session stopped ──────
     if step == "opt2_slow_confirm_stopped":
-        confirm_phrases = ["👍", "done", "stopped", "unplugged", "yes", "ok",
+        confirm_phrases = ["done", "stopped", "unplugged", "yes", "ok",
                             "okay", "finished", "stop", "ready"]
-        if "👍" in msg_raw or any(p in msg for p in confirm_phrases):
+        if "👍" in msg_raw or any(contains_phrase(msg, p) for p in confirm_phrases):
             charger_uuid = state.get("charger_uuid", "")
             charger_name = state.get("charger_name", "your charger")
-            user_states[user_id] = {**state, "step": "opt2_slow_restarting"}
+            user_states[user_id] = {**state, "step": "opt2_slow_await_screen_off"}
             threading.Thread(
                 target=lambda: restart_charger(charger_uuid), daemon=True
             ).start()
-            threading.Thread(
-                target=lambda: poll_charger_and_notify_online(user_id, charger_uuid, charger_name),
-                daemon=True
-            ).start()
             return (
-                f"Thank you! I'm restarting *{charger_name}* now — please wait while I check "
-                "that it's back online. I'll message you as soon as it's ready to plug back in. ⏳"
+                f"Thank you! I'm restarting *{charger_name}* now. 🔄\n\n"
+                "Please keep an eye on the charger screen — once it *goes off* "
+                "(that's the restart taking effect), just let me know and I'll "
+                "check when it's back online for you. 👀"
             )
         else:
             return (
                 "Just let me know once you've *stopped the session and unplugged the "
                 "cable* — you can reply with a 👍, or just tell me when you're done."
+            )
+
+    # ── Slow charging — restart sent, waiting for customer to see the screen go off
+    if step == "opt2_slow_await_screen_off":
+        screen_off_phrases = ["off", "gone off", "screen off", "turned off",
+                               "went off", "blank", "done", "yes", "ok", "okay"]
+        if "👍" in msg_raw or any(contains_phrase(msg, p) for p in screen_off_phrases):
+            charger_uuid = state.get("charger_uuid", "")
+            charger_name = state.get("charger_name", "your charger")
+            user_states[user_id] = {**state, "step": "opt2_slow_restarting"}
+            threading.Thread(
+                target=lambda: poll_charger_and_notify_online(user_id, charger_uuid, charger_name),
+                daemon=True
+            ).start()
+            return (
+                "Great, thanks for letting me know! 😊 I'm now checking that it's "
+                "back online — I'll message you as soon as it's ready to plug back in. ⏳"
+            )
+        else:
+            return (
+                "No rush — just let me know once you see the charger *screen go off*, "
+                "and I'll take it from there."
             )
 
     # ── Slow charging — restart in progress, bot is polling in the background ──
