@@ -67,6 +67,7 @@ MID_FLOW_STEPS = {
     "opt1_key_removed", "opt1_replug_fixed", "opt1_removed_key_try",
     "opt1_error_check", "opt1_try_another_charger", "opt1_other_charger_working",
     "opt2_power_on_site", "opt2_another_charger", "opt2_other_charger_works",
+    "opt2_slow_confirm_stopped",
     "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_wifi",
     "opt3_wattspot_replug", "opt3_other_4g", "opt3_other_final_restart",
     "await_restart_result", "await_slow_restart_result",
@@ -631,6 +632,53 @@ def restart_charger(charger_uuid: str) -> bool:
     return success
 
 
+def poll_charger_and_notify_online(user_id: str, charger_uuid: str, charger_name: str,
+                                    timeout_secs: int = 120, interval_secs: int = 10):
+    """
+    Runs in a background thread after a remote restart (used for the slow-
+    charging flow). Polls Ampcontrol until the charger reports back online,
+    then proactively messages the customer with the go-ahead to plug back
+    in. If it doesn't come back online within timeout_secs, escalates to
+    an agent automatically instead of leaving the customer waiting.
+    """
+    elapsed = 0
+    while elapsed < timeout_secs:
+        time.sleep(interval_secs)
+        elapsed += interval_secs
+        status = get_charger_status(charger_uuid)
+        if status.get("online") is True:
+            log.info(f"✅ Charger {charger_name} back online after {elapsed}s — notifying {user_id}")
+            send_whatsapp_message(
+                user_id,
+                f"✅ Good news — *{charger_name}* is back online! Please plug your vehicle back in now.\n\n"
+                "Is the charging speed better now?\n\nReply *YES* or *NO*"
+            )
+            current = user_states.get(user_id, {})
+            user_states[user_id] = {**current, "step": "await_slow_restart_result"}
+            return
+
+    # Timed out — still not back online after timeout_secs
+    log.warning(f"⚠️ Charger {charger_name} did not come back online within {timeout_secs}s")
+    current = user_states.get(user_id, {})
+    send_whatsapp_message(
+        user_id,
+        f"⏳ This is taking longer than expected to bring *{charger_name}* back online.\n\n"
+        "Let me connect you with our support team so they can look into it directly."
+    )
+    notify_agents(user_id, {
+        **current,
+        "fault_type": "Slow charging — restart timeout",
+        "extra_notes": f"Charger did not come back online within {timeout_secs}s of remote restart"
+    })
+    send_escalation_email(
+        customer_number=user_id.replace("whatsapp:", ""),
+        fault_type="Slow charging — restart timeout",
+        site=current.get("site"),
+        charger_id=current.get("charger_id") or current.get("charger_uuid"),
+    )
+    user_states[user_id] = {**current, "step": "start"}
+
+
 def extract_uuid_from_text(text: str) -> str | None:
     """
     Extracts a charger UUID from text.
@@ -940,21 +988,20 @@ FALLBACK = (
 
 
 def issue_menu(charger_name: str, confirmed_online: bool = True) -> str:
-    status_line = "✅ *Charger is online.*\n\n" if confirmed_online else ""
+    status_word = "online" if confirmed_online else "offline"
+    intro = f"I can see that you are at charger, *{charger_name}*, and the charger is currently {status_word}. 😊\n\n"
     return (
-        f"{status_line}"
-        f"*Charger: {charger_name}*\n\n"
-        "What issue are you experiencing today?\n\n"
+        f"{intro}"
+        "What issue are you experiencing?\n\n"
         "🔴 *1* – My vehicle is not charging\n"
         "🐢 *2* – The charging speed is slow\n"
-        "❓ *3* – Something else\n"
-        "👤 *4* – Speak to a support agent"
+        "❓ *3* – Something else"
     )
 
 
 def offline_message(charger_name: str) -> str:
     return (
-        f"⚠️ *Charger {charger_name} is showing as OFFLINE* on our CPMS.\n\n"
+        f"I can see that you are at charger, *{charger_name}*, and the charger is currently offline. 😔\n\n"
         "Our technical team has been notified and will investigate immediately.\n\n"
     )
 
@@ -1195,6 +1242,8 @@ If intent is "sales", set "reply" to "" (empty string).
 
 If intent is "general", set "reply" to a helpful, friendly, concise answer (2-4 sentences max) using ONLY the FAQ knowledge base below. If the knowledge base does not contain the answer, do NOT make one up — set intent to "agent" instead and reply with a short acknowledgment that you will connect them to someone who can help.
 
+If the "general" answer is specifically about HOW TO STOP a charging session, also include a "media" field set to exactly "video_how_to_stop" (a short demo video). For every other question, omit the "media" field entirely.
+
 If intent is "greeting" or "unclear", set "reply" to "" (empty string).
 
 Be warm, concise, and professional. Use a friendly South African tone. Never invent technical details not found in the knowledge base.
@@ -1357,8 +1406,7 @@ def lookup_charger_and_respond(user_id: str, state: dict,
             "What issue are you experiencing?\n\n"
             "🔴 *1* – My vehicle is not charging\n"
             "🐢 *2* – The charging speed is slow\n"
-            "❓ *3* – Something else\n"
-            "👤 *4* – Speak to a support agent",
+            "❓ *3* – Something else",
             None
         )
 
@@ -1506,12 +1554,14 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             if intent == "general" and ai_result:
                 ai_reply = ai_result.get("reply", "")
                 user_states[user_id] = {**state, "step": "await_qr", "kb_answered": True}
+                media_key = ai_result.get("media")
                 return (
                     f"{ai_reply}\n\n"
                     "---\n"
                     "Did that answer your question? 😊 If you still need help with a specific charger, "
                     "just send me a photo of the QR code or sticker, or type the Charger ID — "
-                    "otherwise you're all set!"
+                    "otherwise you're all set!",
+                    get_media(media_key) if media_key else None
                 )
 
             if intent == "agent" and ai_result:
@@ -1573,12 +1623,14 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 # KB can answer — reply and note that advice was given
                 ai_reply = ai_result.get("reply", "")
                 user_states[user_id] = {**state, "kb_answered": True}
+                media_key = ai_result.get("media")
                 return (
                     f"{ai_reply}\n\n"
                     "---\n"
                     "Did that answer your question? 😊 If you still need help with a specific charger, "
                     "just send me a photo of the QR code or sticker, or type the Charger ID — "
-                    "otherwise you're all set!"
+                    "otherwise you're all set!",
+                    get_media(media_key) if media_key else None
                 )
 
             if intent == "agent" and ai_result:
@@ -1684,12 +1736,14 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             if intent == "general" and ai_result:
                 ai_reply = ai_result.get("reply", "")
                 user_states[user_id] = {**state, "kb_answered": True}
+                media_key = ai_result.get("media")
                 return (
                     f"{ai_reply}\n\n"
                     "---\n"
                     "Did that answer your question? 😊 If you still need help with a specific charger, "
                     "just send me a photo of the QR code or sticker, or type the Charger ID — "
-                    "otherwise you're all set!"
+                    "otherwise you're all set!",
+                    get_media(media_key) if media_key else None
                 )
 
             if intent == "agent" and ai_result:
@@ -1759,8 +1813,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 "What issue are you experiencing?\n\n"
                 "🔴 *1* – My vehicle is not charging\n"
                 "🐢 *2* – The charging speed is slow\n"
-                "❓ *3* – Something else\n"
-                "👤 *4* – Speak to a support agent"
+                "❓ *3* – Something else"
             )
 
     # ── Issue menu — shown after charger confirmed online ─────────────────────
@@ -1780,18 +1833,14 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 get_media("cable_plugin")
             )
         elif msg == "2":
-            # Slow charging — restart and ask to re-check
-            user_states[user_id] = {**state, "step": "await_slow_restart_result",
+            # Slow charging — ask them to stop the session first, THEN restart + poll
+            user_states[user_id] = {**state, "step": "opt2_slow_confirm_stopped",
                                      "fault_type": "Slow charging"}
-            threading.Thread(
-                target=lambda: restart_charger(charger_uuid), daemon=True
-            ).start()
             return (
-                f"🔄 I am restarting *Charger {charger_name}* remotely to reset the session...\n\n"
-                "Please *stop your current session*, wait *2 minutes*, "
-                "then start a new session.\n\n"
-                "Is the charging speed better now?\n\n"
-                "Reply *YES* or *NO*"
+                "🐢 Let's get your speed up!\n\n"
+                "Could you please *stop the current charging session*? Once it's stopped, "
+                "just send me a 👍 or let me know — you can also simply unplug the cable "
+                "and tell me once you're done."
             )
         elif msg == "3":
             user_states[user_id] = {**state, "step": "something_else",
@@ -1827,24 +1876,24 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     get_media("cable_plugin")
                 )
             elif intent == "slow_charging":
-                user_states[user_id] = {**state, "step": "await_slow_restart_result",
+                user_states[user_id] = {**state, "step": "opt2_slow_confirm_stopped",
                                          "fault_type": "Slow charging"}
-                threading.Thread(
-                    target=lambda: restart_charger(charger_uuid), daemon=True
-                ).start()
                 return (
-                    f"I'll restart *{charger_name}* remotely to reset the session. 🔄\n\n"
-                    "Please stop your session, wait 2 minutes, then start a new one.\n\n"
-                    "Is the speed better?\n\nReply *YES* or *NO*"
+                    "🐢 Let's get your speed up!\n\n"
+                    "Could you please *stop the current charging session*? Once it's stopped, "
+                    "just send me a 👍 or let me know — you can also simply unplug the cable "
+                    "and tell me once you're done."
                 )
             elif intent == "agent":
                 return start_escalation(user_id, state)
             elif intent == "general":
                 ai_reply = ai_result.get("reply", "")
+                media_key = ai_result.get("media")
                 return (
                     f"{ai_reply}\n\n"
                     "---\n"
-                    "Did that help? 😊 If not, just tell me a bit more and I'll keep helping."
+                    "Did that help? 😊 If not, just tell me a bit more and I'll keep helping.",
+                    get_media(media_key) if media_key else None
                 )
             else:
                 # Capture description and escalate
@@ -1877,6 +1926,38 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return no_fn()
         else:
             return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
+
+    # ── Slow charging — waiting for customer to confirm session stopped ──────
+    if step == "opt2_slow_confirm_stopped":
+        confirm_phrases = ["👍", "done", "stopped", "unplugged", "yes", "ok",
+                            "okay", "finished", "stop", "ready"]
+        if "👍" in msg_raw or any(p in msg for p in confirm_phrases):
+            charger_uuid = state.get("charger_uuid", "")
+            charger_name = state.get("charger_name", "your charger")
+            user_states[user_id] = {**state, "step": "opt2_slow_restarting"}
+            threading.Thread(
+                target=lambda: restart_charger(charger_uuid), daemon=True
+            ).start()
+            threading.Thread(
+                target=lambda: poll_charger_and_notify_online(user_id, charger_uuid, charger_name),
+                daemon=True
+            ).start()
+            return (
+                f"Thank you! I'm restarting *{charger_name}* now — please wait while I check "
+                "that it's back online. I'll message you as soon as it's ready to plug back in. ⏳"
+            )
+        else:
+            return (
+                "Just let me know once you've stopped the session — you can reply with a 👍, "
+                "or simply unplug the cable and tell me when you're done."
+            )
+
+    # ── Slow charging — restart in progress, bot is polling in the background ──
+    if step == "opt2_slow_restarting":
+        return (
+            "⏳ Still checking on the charger's status — I'll message you as soon as it's "
+            "back online and ready to plug back in. Thanks for your patience!"
+        )
 
     # ── After remote restart — slow charging ──────────────────────────────────
     if step == "await_slow_restart_result":
@@ -1913,12 +1994,14 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             ai_reply = ai_result.get("reply", "")
             user_states[user_id] = {**state, "step": "something_else_followup",
                                      "extra_notes": description}
+            media_key = ai_result.get("media")
             return (
                 f"{ai_reply}\n\n"
                 "---\n"
                 "Did this help?\n\n"
                 "✅ Type *RESOLVED* if your issue is sorted\n"
-                "👤 Type *AGENT* if you still need support"
+                "👤 Type *AGENT* if you still need support",
+                get_media(media_key) if media_key else None
             )
 
         # KB can't answer — escalate with description captured
