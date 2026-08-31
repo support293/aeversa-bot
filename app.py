@@ -1838,9 +1838,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                                      "fault_type": "Slow charging"}
             return (
                 "🐢 Let's get your speed up!\n\n"
-                "Could you please *stop the current charging session*? Once it's stopped, "
-                "just send me a 👍 or let me know — you can also simply unplug the cable "
-                "and tell me once you're done."
+                "Could you please *stop the current charging session* and then "
+                "*unplug the cable*? Once you've done both, just send me a 👍 "
+                "or let me know you're done."
             )
         elif msg == "3":
             user_states[user_id] = {**state, "step": "something_else",
@@ -1880,9 +1880,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                                          "fault_type": "Slow charging"}
                 return (
                     "🐢 Let's get your speed up!\n\n"
-                    "Could you please *stop the current charging session*? Once it's stopped, "
-                    "just send me a 👍 or let me know — you can also simply unplug the cable "
-                    "and tell me once you're done."
+                    "Could you please *stop the current charging session* and then "
+                    "*unplug the cable*? Once you've done both, just send me a 👍 "
+                    "or let me know you're done."
                 )
             elif intent == "agent":
                 return start_escalation(user_id, state)
@@ -1948,8 +1948,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             )
         else:
             return (
-                "Just let me know once you've stopped the session — you can reply with a 👍, "
-                "or simply unplug the cable and tell me when you're done."
+                "Just let me know once you've *stopped the session and unplugged the "
+                "cable* — you can reply with a 👍, or just tell me when you're done."
             )
 
     # ── Slow charging — restart in progress, bot is polling in the background ──
