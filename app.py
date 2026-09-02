@@ -340,15 +340,18 @@ def notify_agents(customer_number: str, state: dict):
         charger_name = state.get("charger_name", "")
         charger_display = charger_name if charger_name and charger_name != "Unknown" else charger_id
         error_code = state.get("error_code", "")
+        extra_notes = state.get("extra_notes", "")
         clean_num  = customer_number.replace("whatsapp:", "")
         error_line = f"🔴 *Error Code:* {error_code}\n" if error_code else ""
+        notes_line = f"📋 *Notes:* {extra_notes}\n" if extra_notes else ""
         message = (
             f"🔴 *AE-Ace Escalation*\n\n"
             f"📱 *Customer:* {clean_num}\n"
             f"⚠️ *Fault:* {fault_type}\n"
             f"📍 *Site:* {site}\n"
             f"🔌 *Charger:* {charger_display}\n"
-            f"{error_line}\n"
+            f"{error_line}"
+            f"{notes_line}\n"
             f"*To take over from AE-Ace:*\n"
             f"Reply: *PAUSE {clean_num}*\n"
             f"Then contact the customer directly on WhatsApp."
@@ -613,6 +616,53 @@ def get_charger_status(charger_uuid: str) -> dict:
 
     log.error(f"Charger {charger_uuid} not found in Ampcontrol")
     return {"online": None, "name": "Unknown", "status": "unknown", "raw": {}}
+
+
+def get_charger_alerts(charger_uuid: str) -> list:
+    """
+    Fetches active alerts for a specific charger from Ampcontrol.
+    Endpoint: GET /v2/alerts/?charger={uuid}
+    Only the confirmed 'charger' query parameter is used here — the exact
+    accepted values for category/urgency filters aren't confirmed against
+    real data, so we deliberately avoid guessing at those and instead
+    filter client-side on the 'active' field from the response schema.
+    """
+    data = ampcontrol_get(f"/alerts/?charger={charger_uuid}")
+    if not data or not data.get("data"):
+        return []
+    active_alerts = [a for a in data["data"] if a.get("active")]
+    log.info(f"Charger {charger_uuid} → {len(active_alerts)} active alert(s) found")
+    return active_alerts
+
+
+def format_alerts_for_agent(alerts: list) -> str:
+    """
+    Formats Ampcontrol alerts into a plain-text summary for escalation
+    notes. Deliberately does NOT try to interpret what any alert means —
+    the real wording Ampcontrol uses for name/category/description isn't
+    confirmed, so this just surfaces the raw fields for a human to read,
+    rather than guess-matching against unconfirmed values.
+    """
+    if not alerts:
+        return ""
+    lines = []
+    for alert in alerts[:3]:  # cap so escalation notes don't get enormous
+        name        = alert.get("name") or "Unnamed alert"
+        description = alert.get("description") or ""
+        category    = alert.get("category") or []
+        urgency     = alert.get("urgency") or ""
+        category_str = ", ".join(category) if isinstance(category, list) else str(category)
+        parts = [name]
+        if description:
+            parts.append(description)
+        if category_str:
+            parts.append(f"category: {category_str}")
+        if urgency:
+            parts.append(f"urgency: {urgency}")
+        lines.append(" — ".join(parts))
+    if len(alerts) > 3:
+        lines.append(f"...and {len(alerts) - 3} more active alert(s)")
+    return "\n".join(lines)
 
 
 def restart_charger(charger_uuid: str) -> bool:
@@ -1812,6 +1862,17 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         charger_uuid = state.get("charger_uuid", "")
 
         if msg == "1":
+            # Vehicle not charging — check for active alerts before trying a restart
+            active_alerts = get_charger_alerts(charger_uuid)
+            if active_alerts:
+                alert_summary = format_alerts_for_agent(active_alerts)
+                return start_escalation(
+                    user_id,
+                    {**state, "fault_type": "Vehicle not charging", "extra_notes": alert_summary},
+                    "I can see there's an active alert on this charger. 🔎\n\n"
+                    "Let me connect you with our support team so they can look "
+                    "into this properly rather than trying a remote restart."
+                )
             # Vehicle not charging — get a description first, THEN unplug/restart/poll
             user_states[user_id] = {**state, "step": "opt1_awaiting_description",
                                      "fault_type": "Vehicle not charging"}
@@ -1850,6 +1911,16 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             intent = ai_result.get("intent", "unclear") if ai_result else "unclear"
 
             if intent in ["not_charging", "charger_fault", "charger_off"]:
+                active_alerts = get_charger_alerts(charger_uuid)
+                if active_alerts:
+                    alert_summary = format_alerts_for_agent(active_alerts)
+                    return start_escalation(
+                        user_id,
+                        {**state, "fault_type": "Vehicle not charging", "extra_notes": alert_summary},
+                        "I can see there's an active alert on this charger. 🔎\n\n"
+                        "Let me connect you with our support team so they can look "
+                        "into this properly rather than trying a remote restart."
+                    )
                 user_states[user_id] = {**state, "step": "opt1_confirm_unplugged",
                                          "fault_type": "Vehicle not charging"}
                 return (
