@@ -668,18 +668,42 @@ def format_alerts_for_agent(alerts: list) -> str:
     Formats Ampcontrol alerts into a plain-text summary for escalation
     notes. Deliberately does NOT try to interpret what any alert means —
     the real wording Ampcontrol uses for name/category/description isn't
-    confirmed, so this just surfaces the raw fields for a human to read,
-    rather than guess-matching against unconfirmed values.
+    confirmed to be driver-friendly, so this just surfaces the raw fields
+    for a human agent to read, rather than guess-matching against
+    unconfirmed values or showing it to the customer directly.
+
+    Dedupes identical alerts (Ampcontrol can log the same alert type more
+    than once) and sorts by urgency so the agent sees the most severe
+    issue first, regardless of the order Ampcontrol returned them in.
     """
     if not alerts:
         return ""
-    lines = []
-    for alert in alerts[:3]:  # cap so escalation notes don't get enormous
+
+    # Confirmed real urgency values, most severe first
+    URGENCY_ORDER = ["Very High", "High", "Medium", "Low", "Very Low"]
+
+    seen = set()
+    unique_alerts = []
+    for alert in alerts:
         name        = alert.get("name") or "Unnamed alert"
         description = alert.get("description") or ""
         category    = alert.get("category") or []
         urgency     = alert.get("urgency") or ""
         category_str = ", ".join(category) if isinstance(category, list) else str(category)
+        key = (name, description, category_str, urgency)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_alerts.append((name, description, category_str, urgency))
+
+    def urgency_rank(entry):
+        urgency = entry[3]
+        return URGENCY_ORDER.index(urgency) if urgency in URGENCY_ORDER else len(URGENCY_ORDER)
+
+    unique_alerts.sort(key=urgency_rank)
+
+    lines = []
+    for name, description, category_str, urgency in unique_alerts[:3]:
         parts = [name]
         if description:
             parts.append(description)
@@ -688,8 +712,8 @@ def format_alerts_for_agent(alerts: list) -> str:
         if urgency:
             parts.append(f"urgency: {urgency}")
         lines.append(" — ".join(parts))
-    if len(alerts) > 3:
-        lines.append(f"...and {len(alerts) - 3} more active alert(s)")
+    if len(unique_alerts) > 3:
+        lines.append(f"...and {len(unique_alerts) - 3} more active alert(s)")
     return "\n".join(lines)
 
 
