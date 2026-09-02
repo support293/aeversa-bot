@@ -546,6 +546,17 @@ def ampcontrol_get(endpoint: str) -> dict | None:
         )
         response.raise_for_status()
         return response.json()
+    except requests.exceptions.HTTPError as e:
+        # Log the response body too — the status code alone ("422 Client
+        # Error") doesn't say WHAT was invalid, but Ampcontrol's error
+        # responses typically include that detail in the body.
+        body = ""
+        try:
+            body = response.text[:500]
+        except Exception:
+            pass
+        log.error(f"❌ Ampcontrol GET {endpoint} failed: {e} | Response body: {body}")
+        return None
     except Exception as e:
         log.error(f"❌ Ampcontrol GET {endpoint} failed: {e}")
         return None
