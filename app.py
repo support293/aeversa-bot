@@ -998,11 +998,10 @@ def issue_menu(charger_name: str, confirmed_online: bool = True) -> str:
     intro = f"I can see that you are at charger, *{charger_name}*, and the charger is currently {status_word}. 😊\n\n"
     return (
         f"{intro}"
-        "What issue are you experiencing?\n\n"
+        "What issue are you experiencing? Please reply with *1*, *2*, or *3*:\n\n"
         "🔴 *1* – My vehicle is not charging\n"
         "🐢 *2* – The charging speed is slow\n"
-        "❓ *3* – Something else\n\n"
-        "Please reply with *1*, *2*, or *3*."
+        "❓ *3* – Something else"
     )
 
 
@@ -1401,11 +1400,10 @@ def lookup_charger_and_respond(user_id: str, state: dict,
         return (
             "⚠️ I couldn't check your charger's live status right now.\n\n"
             "I'll guide you through some manual troubleshooting steps.\n\n"
-            "What issue are you experiencing?\n\n"
+            "What issue are you experiencing? Please reply with *1*, *2*, or *3*:\n\n"
             "🔴 *1* – My vehicle is not charging\n"
             "🐢 *2* – The charging speed is slow\n"
-            "❓ *3* – Something else\n\n"
-            "Please reply with *1*, *2*, or *3*.",
+            "❓ *3* – Something else",
             None
         )
 
@@ -1799,11 +1797,10 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return start_escalation(user_id, state)
         else:
             return (
-                "What issue are you experiencing?\n\n"
+                "What issue are you experiencing? Please reply with *1*, *2*, or *3*:\n\n"
                 "🔴 *1* – My vehicle is not charging\n"
                 "🐢 *2* – The charging speed is slow\n"
-                "❓ *3* – Something else\n\n"
-                "Please reply with *1*, *2*, or *3*."
+                "❓ *3* – Something else"
             )
 
     # ── Issue menu — shown after charger confirmed online ─────────────────────
