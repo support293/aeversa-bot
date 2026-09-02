@@ -279,8 +279,8 @@ def check_session_timeouts():
                 send_whatsapp_message(
                     user_id,
                     "👋 Your previous support session has ended after 2 hours of inactivity.\n\n"
-                    "If you still need help, please send a photo of your charger QR code "
-                    "or sticker and I'll assist you right away! ⚡"
+                    "If you still need help, please send a photo of your Charger ID "
+                    "sticker and I'll assist you right away! ⚡"
                 )
             continue
 
@@ -960,9 +960,8 @@ user_states = {}
 GREETING = (
     "👋 Hello, welcome to the Aeversa helpdesk!\n\n"
     "My name is *AE-Ace* and I am here to get you charged up. ⚡\n\n"
-    "To get started, please send me one of the following:\n\n"
-    "📷 A photo of the *QR code* on your charger\n"
-    "📷 A photo of the *Charger ID sticker*\n\n"
+    "To get started, please send me a photo of the *Charger ID sticker*, "
+    "or type the *Charger ID*.\n\n"
     "I will read it and check your charger's status immediately!"
 )
 
@@ -1343,17 +1342,16 @@ def handle_qr_or_image(user_id: str, state: dict,
         return (
             f"📷 I can see *\"{sticker_text}\"* on your charger, "
             f"but I couldn't find it in our system.\n\n"
-            f"Please check the name and try typing it, or send the "
-            f"*QR code* image from the charger instead. 😊"
+            f"Please check the name and try typing it, or send a clearer "
+            f"photo of the *Charger ID sticker*. 😊"
         )
 
-    # Step 3: Both QR and OCR failed
+    # Step 3: Both QR and OCR failed (QR is attempted silently, not advertised)
     user_states[user_id] = {**state, "step": "await_charger_id"}
     return (
         "📷 I received your image but couldn't read any charger information from it.\n\n"
         "Please try one of these:\n\n"
-        "📷 Send a clearer photo of the *QR code* on the charger\n"
-        "📷 Send a photo of the *Charger ID sticker*\n"
+        "📷 Send a clearer photo of the *Charger ID sticker*\n"
         "✍️ Type the *Charger ID* as shown on the unit\n\n"
         "💡 _Tip: Make sure the image is well-lit and in focus._",
         get_media("charger_id_northgate")
@@ -1446,7 +1444,6 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return (
                 "😊 I'm still waiting for your charger details!\n\n"
                 "Please send me:\n"
-                "📷 A photo of the *QR code* on your charger, or\n"
                 "📷 A photo of the *Charger ID sticker*\n\n"
                 "Or simply type the Charger ID."
             )
@@ -1547,8 +1544,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             # Not found in Ampcontrol, or looked like a question — check the KB
             ai_result = ask_claude(msg_raw, context_hint=(
                 "The bot's last message asked the customer to send a photo of "
-                "the QR code on their charger, a photo of the Charger ID "
-                "sticker, or type the Charger ID."
+                "their Charger ID sticker, or type the Charger ID."
             ))
             intent = ai_result.get("intent", "unclear") if ai_result else "unclear"
             if intent == "general" and ai_result:
@@ -1559,7 +1555,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     f"{ai_reply}\n\n"
                     "---\n"
                     "Did that answer your question? 😊 If you still need help with a specific charger, "
-                    "just send me a photo of the QR code or sticker, or type the Charger ID — "
+                    "just send me a photo of the Charger ID sticker, or type the Charger ID — "
                     "otherwise you're all set!",
                     get_media(media_key) if media_key else None
                 )
@@ -1575,10 +1571,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 # re-checked as if it were a charger name/ID again.
                 user_states[user_id] = {**state, "step": "pre_escalate_site"}
                 return (
-                    "No worries! Could you please send a photo of the *QR code* "
-                    "on the charger instead? If there's no QR code either, just let "
-                    "me know which *site or depot* you're at and I'll get our team "
-                    "to help identify the correct charger for you. 😊"
+                    "No worries! Just let me know which *site or depot* you're at "
+                    "and I'll get our team to help identify the correct charger for you. 😊"
                 )
 
         # EVERYTHING ELSE — show greeting and move to await_qr
@@ -1614,8 +1608,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             # Not found in Ampcontrol, or looked like a question — check intent
             ai_result = ask_claude(msg_raw, context_hint=(
                 "The bot's last message asked the customer to send a photo of "
-                "the QR code on their charger, a photo of the Charger ID "
-                "sticker, or type the Charger ID."
+                "their Charger ID sticker, or type the Charger ID."
             ))
             intent = ai_result.get("intent", "unclear") if ai_result else "unclear"
 
@@ -1628,7 +1621,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     f"{ai_reply}\n\n"
                     "---\n"
                     "Did that answer your question? 😊 If you still need help with a specific charger, "
-                    "just send me a photo of the QR code or sticker, or type the Charger ID — "
+                    "just send me a photo of the Charger ID sticker, or type the Charger ID — "
                     "otherwise you're all set!",
                     get_media(media_key) if media_key else None
                 )
@@ -1644,10 +1637,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 # re-checked as if it were a charger name/ID again.
                 user_states[user_id] = {**state, "step": "pre_escalate_site"}
                 return (
-                    "No worries! Could you please send a photo of the *QR code* "
-                    "on the charger instead? If there's no QR code either, just let "
-                    "me know which *site or depot* you're at and I'll get our team "
-                    "to help identify the correct charger for you. 😊"
+                    "No worries! Just let me know which *site or depot* you're at "
+                    "and I'll get our team to help identify the correct charger for you. 😊"
                 )
 
             if intent in ["not_charging", "charger_fault", "charger_off", "slow_charging"]:
@@ -1665,7 +1656,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                         "To help you properly, I need to check your charger's status "
                         "and potentially restart it remotely.\n\n"
                         "Please send me:\n"
-                        "📷 A photo of the *QR code* or *name sticker* on the charger\n"
+                        "📷 A photo of the *Charger ID sticker*\n"
                         "✍️ Or type the *Charger ID* as shown on the unit"
                     )
 
@@ -1694,13 +1685,12 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             f"I couldn't find a charger matching that. 😔 "
             f"({3 - attempts} attempt{'s' if 3 - attempts != 1 else ''} remaining)\n\n"
             "Please try:\n"
-            "📷 Send a *photo of the QR code* on the charger\n"
-            "📷 Send a *photo of the name sticker* on the charger\n"
+            "📷 Send a *photo of the Charger ID sticker* on the charger\n"
             "✍️ Type the *exact Charger ID* as shown on the unit\n\n"
             "Or type *AGENT* to speak to someone directly."
         )
 
-    # ── Waiting for Charger UUID after QR failed ──────────────────────────────
+    # ── Waiting for Charger UUID after initial identification failed ─────────
     if step == "await_charger_id":
         if has_media and received_media:
             return handle_qr_or_image(user_id, state, received_media, msg_raw)
@@ -1729,8 +1719,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             # Not found in Ampcontrol, or looked like a question — check the KB
             ai_result = ask_claude(msg_raw, context_hint=(
                 "The bot's last message asked the customer to send a photo of "
-                "the QR code on their charger, a photo of the Charger ID "
-                "sticker, or type the Charger ID."
+                "their Charger ID sticker, or type the Charger ID."
             ))
             intent = ai_result.get("intent", "unclear") if ai_result else "unclear"
             if intent == "general" and ai_result:
@@ -1741,7 +1730,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     f"{ai_reply}\n\n"
                     "---\n"
                     "Did that answer your question? 😊 If you still need help with a specific charger, "
-                    "just send me a photo of the QR code or sticker, or type the Charger ID — "
+                    "just send me a photo of the Charger ID sticker, or type the Charger ID — "
                     "otherwise you're all set!",
                     get_media(media_key) if media_key else None
                 )
@@ -1757,17 +1746,14 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 # re-checked as if it were a charger name/ID again.
                 user_states[user_id] = {**state, "step": "pre_escalate_site"}
                 return (
-                    "No worries! Could you please send a photo of the *QR code* "
-                    "on the charger instead? If there's no QR code either, just let "
-                    "me know which *site or depot* you're at and I'll get our team "
-                    "to help identify the correct charger for you. 😊"
+                    "No worries! Just let me know which *site or depot* you're at "
+                    "and I'll get our team to help identify the correct charger for you. 😊"
                 )
 
             if not is_confused:
                 return (
                     f"I searched for *\"{msg_raw.strip()}\"* but couldn't find a matching charger. 😔\n\n"
                     "Please try:\n"
-                    "📷 Send a photo of the *QR code* on the charger\n"
                     "📷 Send a photo of the *Charger ID sticker*\n"
                     "✍️ Type the exact Charger ID as shown on the unit\n\n"
                     "Or type *AGENT* to speak to someone directly."
@@ -1775,8 +1761,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
         return (
             "Please send me a photo of the charger or type the Charger ID. 😊\n\n"
-            "📷 Photo of *QR code* — I'll scan it automatically\n"
-            "📷 Photo of *name sticker* — I'll read the text\n"
+            "📷 Photo of *Charger ID sticker* — I'll read the text\n"
             "✍️ Type the *Charger ID* as shown on the unit\n\n"
             "Or type *AGENT* to speak to someone directly."
         )
@@ -2473,7 +2458,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                         f"{AGENT_INTRO}"
                     )
             return (
-                "📷 I received your image but couldn't read a QR code from it.\n\n"
+                "📷 I received your image but couldn't identify the charger from it.\n\n"
                 "Please type the *Charger ID* manually.\n\n"
                 "📍 The sticker is on the *front of the charger, underneath the screen.*",
                 get_media("charger_id_northgate")
@@ -2511,8 +2496,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     return lookup_charger_and_respond(user_id, state, charger_uuid)
             # Couldn't read it — fall back to asking for the site as text
             return (
-                "📷 I received your photo but couldn't read a QR code or "
-                "charger name from it. 😔\n\n"
+                "📷 I received your photo but couldn't identify the "
+                "charger from it. 😔\n\n"
                 "No problem — which *site or depot* are you at? I'll get our "
                 "team to help identify the correct charger."
             )
