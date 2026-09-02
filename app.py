@@ -1001,7 +1001,8 @@ def issue_menu(charger_name: str, confirmed_online: bool = True) -> str:
         "What issue are you experiencing?\n\n"
         "🔴 *1* – My vehicle is not charging\n"
         "🐢 *2* – The charging speed is slow\n"
-        "❓ *3* – Something else"
+        "❓ *3* – Something else\n\n"
+        "Please reply with *1*, *2*, or *3*."
     )
 
 
@@ -1403,7 +1404,8 @@ def lookup_charger_and_respond(user_id: str, state: dict,
             "What issue are you experiencing?\n\n"
             "🔴 *1* – My vehicle is not charging\n"
             "🐢 *2* – The charging speed is slow\n"
-            "❓ *3* – Something else",
+            "❓ *3* – Something else\n\n"
+            "Please reply with *1*, *2*, or *3*.",
             None
         )
 
@@ -1800,7 +1802,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 "What issue are you experiencing?\n\n"
                 "🔴 *1* – My vehicle is not charging\n"
                 "🐢 *2* – The charging speed is slow\n"
-                "❓ *3* – Something else"
+                "❓ *3* – Something else\n\n"
+                "Please reply with *1*, *2*, or *3*."
             )
 
     # ── Issue menu — shown after charger confirmed online ─────────────────────
@@ -1809,23 +1812,22 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         charger_uuid = state.get("charger_uuid", "")
 
         if msg == "1":
-            # Vehicle not charging — ask them to unplug first, THEN restart + poll
-            user_states[user_id] = {**state, "step": "opt1_confirm_unplugged",
+            # Vehicle not charging — get a description first, THEN unplug/restart/poll
+            user_states[user_id] = {**state, "step": "opt1_awaiting_description",
                                      "fault_type": "Vehicle not charging"}
             return (
-                "🔴 Let's get you charging!\n\n"
-                "Could you please *unplug the charging cable* from your vehicle? "
-                "Once it's unplugged, just send me a 👍 or let me know."
+                "🔴 Sorry to hear that!\n\n"
+                "Can you briefly describe what's happening? (e.g. no lights on "
+                "the charger, an error message, nothing happens when you plug in, etc.)"
             )
         elif msg == "2":
-            # Slow charging — ask them to stop the session first, THEN restart + poll
-            user_states[user_id] = {**state, "step": "opt2_slow_confirm_stopped",
+            # Slow charging — get a description first, THEN stop/unplug/restart/poll
+            user_states[user_id] = {**state, "step": "opt2_awaiting_description",
                                      "fault_type": "Slow charging"}
             return (
-                "🐢 Let's get your speed up!\n\n"
-                "Could you please *stop the current charging session* and then "
-                "*unplug the cable*? Once you've done both, just send me a 👍 "
-                "or let me know you're done."
+                "🐢 Sorry to hear that!\n\n"
+                "Can you briefly describe what's happening? (e.g. how slow it is, "
+                "when it started, any error messages, etc.)"
             )
         elif msg == "3":
             user_states[user_id] = {**state, "step": "something_else",
@@ -1886,6 +1888,18 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     f"I've noted your issue: *\"{msg_raw.strip()}\"*\n\n"
                     "Let me connect you with a support agent."
                 )
+
+    # ── Vehicle not charging — capturing the customer's description ──────────
+    if step == "opt1_awaiting_description":
+        description = msg_raw.strip()
+        user_states[user_id] = {**state, "step": "opt1_confirm_unplugged",
+                                 "extra_notes": description}
+        return (
+            "Thanks for letting me know! 📋\n\n"
+            "Let's get you charging!\n\n"
+            "Could you please *unplug the charging cable* from your vehicle? "
+            "Once it's unplugged, just send me a 👍 or let me know."
+        )
 
     # ── Vehicle not charging — waiting for customer to confirm unplugged ─────
     if step == "opt1_confirm_unplugged":
@@ -1963,6 +1977,19 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return no_fn()
         else:
             return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
+
+    # ── Slow charging — capturing the customer's description ─────────────────
+    if step == "opt2_awaiting_description":
+        description = msg_raw.strip()
+        user_states[user_id] = {**state, "step": "opt2_slow_confirm_stopped",
+                                 "extra_notes": description}
+        return (
+            "Thanks for letting me know! 📋\n\n"
+            "🐢 Let's get your speed up!\n\n"
+            "Could you please *stop the current charging session* and then "
+            "*unplug the cable*? Once you've done both, just send me a 👍 "
+            "or let me know you're done."
+        )
 
     # ── Slow charging — waiting for customer to confirm session stopped ──────
     if step == "opt2_slow_confirm_stopped":
