@@ -1239,7 +1239,7 @@ If intent is "sales", set "reply" to "" (empty string).
 
 If intent is "general", set "reply" to a helpful answer using ONLY the FAQ knowledge base below. Keep it short and simple — 1-2 short sentences where possible, plain everyday words, no long or complex sentences. Drivers are reading this quickly on their phone, often mid-task, so clarity and brevity matter more than completeness. If the knowledge base does not contain the answer, do NOT make one up — set intent to "agent" instead and reply with a short acknowledgment that you will connect them to someone who can help.
 
-If the "general" answer is specifically about HOW TO STOP a charging session, also include a "media" field set to exactly "video_how_to_stop" (a short demo video). For every other question, omit the "media" field entirely.
+If the "general" answer involves the customer tapping the charger screen twice and pressing Stop — whether they asked how to stop a session, or the cable is stuck — also include a "media" field set to exactly "video_how_to_stop" (a short demo video showing this action). For every other question, omit the "media" field entirely.
 
 If intent is "greeting" or "unclear", set "reply" to "" (empty string).
 
