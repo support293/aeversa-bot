@@ -1252,7 +1252,13 @@ def start_escalation(user_id: str, state: dict, context_msg: str = "") -> str:
             "Which *site* are you calling from? Please type the site name."
         )
 
-    # Have site but need charger ID
+    # Have site but need charger ID — unless we already have an unconfirmed
+    # attempt from an earlier failed identification try, in which case
+    # asking again would just repeat a question they already couldn't answer
+    if state.get("attempted_charger_id"):
+        user_states[user_id] = {**state, "step": "start"}
+        return f"{prefix}{AGENT_INTRO}"
+
     user_states[user_id] = {**state, "step": "pre_escalate_charger_id"}
     return (
         f"{prefix}Before I connect you to an agent, I just need one more detail.\n\n"
@@ -1754,9 +1760,14 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                                   "unrecognized_attempts": attempts}
 
         if attempts >= 3:
-            user_states[user_id] = {**state, "step": "start",
-                                      "unrecognized_attempts": 0}
-            return start_escalation(user_id, state,
+            attempted_id = msg_raw.strip()
+            escalate_state = {
+                **state, "step": "start", "unrecognized_attempts": 0,
+                "attempted_charger_id": attempted_id,
+                "extra_notes": f"Customer's last identification attempt (unconfirmed): \"{attempted_id}\""
+            }
+            user_states[user_id] = escalate_state
+            return start_escalation(user_id, escalate_state,
                 "I'm having trouble identifying your charger. 😔\n\n"
                 "Let me connect you with a support agent who can help directly.")
 
@@ -2755,6 +2766,13 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         unknown_phrases = ["dont know", "don't know", "not sure", "unsure",
                            "no idea", "unknown", "i dont", "no clue", "cant tell"]
         if any(phrase in msg for phrase in unknown_phrases):
+            if state.get("attempted_charger_id"):
+                # Already have an unconfirmed attempt from earlier — don't ask again
+                user_states[user_id] = {**state, "site": "Unknown", "step": "start"}
+                return (
+                    "No problem! 😊\n\n"
+                    f"{AGENT_INTRO}"
+                )
             user_states[user_id] = {**state, "step": "pre_escalate_charger_id",
                                      "site": "Unknown"}
             return (
@@ -2766,6 +2784,13 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 get_media("charger_id_northgate")
             )
         site = msg_raw.strip()
+        if state.get("attempted_charger_id"):
+            # Already have an unconfirmed attempt from earlier — don't ask again
+            user_states[user_id] = {**state, "site": site, "step": "start"}
+            return (
+                f"Thank you — noted that you are at *{site}*.\n\n"
+                f"{AGENT_INTRO}"
+            )
         user_states[user_id] = {**state, "step": "pre_escalate_charger_id", "site": site}
         return (
             f"Thank you — noted that you are at *{site}*.\n\n"
