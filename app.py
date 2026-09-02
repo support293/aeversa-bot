@@ -1706,9 +1706,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     # First time — guide them to identify charger so we can help properly
                     user_states[user_id] = {**state, "fault_hint": intent}
                     return (
-                        "I'm sorry to hear that. 😔\n\n"
-                        "To help you properly, I need to check your charger's status "
-                        "and potentially restart it remotely.\n\n"
+                        "Got it — to look into this properly, I'll need to check "
+                        "your charger's status.\n\n"
                         "Please send me:\n"
                         "📷 A photo of the *Charger ID sticker*\n"
                         "✍️ Or type the *Charger ID* as shown on the unit"
