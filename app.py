@@ -1467,6 +1467,19 @@ def lookup_charger_and_respond(user_id: str, state: dict,
     }
 
     if charger["online"] is True:
+        active_alerts = get_charger_alerts(charger_uuid)
+        if active_alerts:
+            alert_summary = format_alerts_for_agent(active_alerts)
+            escalate_state = {**base_state, "fault_type": "Active charger alert",
+                               "extra_notes": alert_summary}
+            return (
+                start_escalation(
+                    user_id, escalate_state,
+                    f"I can see that you are at charger, *{friendly_name}*, and it's "
+                    "online — but there's an active alert flagged on it. 🔎"
+                ),
+                None
+            )
         user_states[user_id] = {**base_state, "step": "issue_menu"}
         return (issue_menu(friendly_name, confirmed_online=True), None)
 
