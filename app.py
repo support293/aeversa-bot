@@ -1237,7 +1237,7 @@ If intent is "agent" or "no_charger_id", set "reply" to a short one-sentence ack
 
 If intent is "sales", set "reply" to "" (empty string).
 
-If intent is "general", set "reply" to a helpful, friendly, concise answer (2-4 sentences max) using ONLY the FAQ knowledge base below. If the knowledge base does not contain the answer, do NOT make one up — set intent to "agent" instead and reply with a short acknowledgment that you will connect them to someone who can help.
+If intent is "general", set "reply" to a helpful answer using ONLY the FAQ knowledge base below. Keep it short and simple — 1-2 short sentences where possible, plain everyday words, no long or complex sentences. Drivers are reading this quickly on their phone, often mid-task, so clarity and brevity matter more than completeness. If the knowledge base does not contain the answer, do NOT make one up — set intent to "agent" instead and reply with a short acknowledgment that you will connect them to someone who can help.
 
 If the "general" answer is specifically about HOW TO STOP a charging session, also include a "media" field set to exactly "video_how_to_stop" (a short demo video). For every other question, omit the "media" field entirely.
 
@@ -2080,9 +2080,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return (
                 f"{ai_reply}{video_note}\n\n"
                 "---\n"
-                "Did this help?\n\n"
-                "✅ Type *RESOLVED* if your issue is sorted\n"
-                "👤 Type *AGENT* if you still need support",
+                "Has this fixed your problem?\n\n"
+                "Reply *YES* or *NO*",
                 get_media(media_key) if media_key else None
             )
 
@@ -2097,7 +2096,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         )
 
     if step == "something_else_followup":
-        QUESTION = "Did that help?"
+        QUESTION = "Has this fixed your problem?"
         def yes_fn():
             user_states[user_id] = {"step": "start"}
             return GREAT_NEWS
