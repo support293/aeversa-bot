@@ -66,6 +66,7 @@ SESSION_RESET_SECS      = 7200   # 2 hours   — reset session completely
 MID_FLOW_STEPS = {
     "opt1_key_removed", "opt1_replug_fixed", "opt1_removed_key_try",
     "opt1_error_check", "opt1_try_another_charger", "opt1_other_charger_working",
+    "opt1_confirm_unplugged", "opt1_await_screen_off",
     "opt2_power_on_site", "opt2_another_charger", "opt2_other_charger_works",
     "opt2_slow_confirm_stopped", "opt2_slow_await_screen_off",
     "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_wifi",
@@ -633,13 +634,17 @@ def restart_charger(charger_uuid: str) -> bool:
 
 
 def poll_charger_and_notify_online(user_id: str, charger_uuid: str, charger_name: str,
+                                    next_step: str = "await_slow_restart_result",
+                                    question: str = "Is the charging speed better now?",
+                                    fault_type: str = "Slow charging",
                                     timeout_secs: int = 120, interval_secs: int = 10):
     """
-    Runs in a background thread after a remote restart (used for the slow-
-    charging flow). Polls Ampcontrol until the charger reports back online,
-    then proactively messages the customer with the go-ahead to plug back
-    in. If it doesn't come back online within timeout_secs, escalates to
-    an agent automatically instead of leaving the customer waiting.
+    Runs in a background thread after a remote restart (used by both the
+    slow-charging and vehicle-not-charging flows). Polls Ampcontrol until
+    the charger reports back online, then proactively messages the customer
+    with the go-ahead to plug back in and the appropriate follow-up
+    question. If it doesn't come back online within timeout_secs, escalates
+    to an agent automatically instead of leaving the customer waiting.
     """
     elapsed = 0
     while elapsed < timeout_secs:
@@ -651,15 +656,16 @@ def poll_charger_and_notify_online(user_id: str, charger_uuid: str, charger_name
             send_whatsapp_message(
                 user_id,
                 f"✅ Good news — *{charger_name}* is back online! Please plug your vehicle back in now.\n\n"
-                "Is the charging speed better now?\n\nReply *YES* or *NO*"
+                f"{question}\n\nReply *YES* or *NO*"
             )
             current = user_states.get(user_id, {})
-            user_states[user_id] = {**current, "step": "await_slow_restart_result"}
+            user_states[user_id] = {**current, "step": next_step}
             return
 
     # Timed out — still not back online after timeout_secs
     log.warning(f"⚠️ Charger {charger_name} did not come back online within {timeout_secs}s")
     current = user_states.get(user_id, {})
+    timeout_fault = f"{fault_type} — restart timeout"
     send_whatsapp_message(
         user_id,
         f"⏳ This is taking longer than expected to bring *{charger_name}* back online.\n\n"
@@ -667,12 +673,12 @@ def poll_charger_and_notify_online(user_id: str, charger_uuid: str, charger_name
     )
     notify_agents(user_id, {
         **current,
-        "fault_type": "Slow charging — restart timeout",
+        "fault_type": timeout_fault,
         "extra_notes": f"Charger did not come back online within {timeout_secs}s of remote restart"
     })
     send_escalation_email(
         customer_number=user_id.replace("whatsapp:", ""),
-        fault_type="Slow charging — restart timeout",
+        fault_type=timeout_fault,
         site=current.get("site"),
         charger_id=current.get("charger_id") or current.get("charger_uuid"),
     )
@@ -1003,16 +1009,6 @@ def offline_message(charger_name: str) -> str:
     return (
         f"I can see that you are at charger, *{charger_name}*, and the charger is currently offline. 😔\n\n"
         "Our technical team has been notified and will investigate immediately.\n\n"
-    )
-
-
-def restart_message(charger_name: str) -> str:
-    return (
-        f"🔄 I am restarting *Charger {charger_name}* remotely right now...\n\n"
-        "Please *unplug your vehicle*, wait *2 minutes*, then plug back in firmly. "
-        "🎥 See the video below for how.\n\n"
-        "Is your vehicle now charging?\n\n"
-        "Reply *YES* or *NO*"
     )
 
 
@@ -1813,15 +1809,13 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         charger_uuid = state.get("charger_uuid", "")
 
         if msg == "1":
-            # Vehicle not charging — restart charger and ask to replug
-            user_states[user_id] = {**state, "step": "await_restart_result",
+            # Vehicle not charging — ask them to unplug first, THEN restart + poll
+            user_states[user_id] = {**state, "step": "opt1_confirm_unplugged",
                                      "fault_type": "Vehicle not charging"}
-            threading.Thread(
-                target=lambda: restart_charger(charger_uuid), daemon=True
-            ).start()
             return (
-                restart_message(charger_name),
-                get_media("cable_plugin")
+                "🔴 Let's get you charging!\n\n"
+                "Could you please *unplug the charging cable* from your vehicle? "
+                "Once it's unplugged, just send me a 👍 or let me know."
             )
         elif msg == "2":
             # Slow charging — ask them to stop the session first, THEN restart + poll
@@ -1854,18 +1848,12 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             intent = ai_result.get("intent", "unclear") if ai_result else "unclear"
 
             if intent in ["not_charging", "charger_fault", "charger_off"]:
-                user_states[user_id] = {**state, "step": "await_restart_result",
+                user_states[user_id] = {**state, "step": "opt1_confirm_unplugged",
                                          "fault_type": "Vehicle not charging"}
-                threading.Thread(
-                    target=lambda: restart_charger(charger_uuid), daemon=True
-                ).start()
                 return (
-                    f"It sounds like your vehicle isn't charging — "
-                    f"let me restart *{charger_name}* remotely right now. 🔄\n\n"
-                    "Please unplug, wait 2 minutes, then plug back in. "
-                    "🎥 See the video below for how.\n\n"
-                    "Is your vehicle now charging?\n\nReply *YES* or *NO*",
-                    get_media("cable_plugin")
+                    "🔴 Let's get you charging!\n\n"
+                    "Could you please *unplug the charging cable* from your vehicle? "
+                    "Once it's unplugged, just send me a 👍 or let me know."
                 )
             elif intent == "slow_charging":
                 user_states[user_id] = {**state, "step": "opt2_slow_confirm_stopped",
@@ -1898,6 +1886,62 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     f"I've noted your issue: *\"{msg_raw.strip()}\"*\n\n"
                     "Let me connect you with a support agent."
                 )
+
+    # ── Vehicle not charging — waiting for customer to confirm unplugged ─────
+    if step == "opt1_confirm_unplugged":
+        confirm_phrases = ["done", "unplugged", "yes", "ok", "okay", "finished", "ready"]
+        if "👍" in msg_raw or any(contains_phrase(msg, p) for p in confirm_phrases):
+            charger_uuid = state.get("charger_uuid", "")
+            charger_name = state.get("charger_name", "your charger")
+            user_states[user_id] = {**state, "step": "opt1_await_screen_off"}
+            threading.Thread(
+                target=lambda: restart_charger(charger_uuid), daemon=True
+            ).start()
+            return (
+                f"Thank you! I'm restarting *{charger_name}* now. 🔄\n\n"
+                "Please keep an eye on the charger screen — once it *goes off* "
+                "(that's the restart taking effect), just let me know and I'll "
+                "check when it's back online for you. 👀"
+            )
+        else:
+            return (
+                "Just let me know once you've *unplugged the cable* from your "
+                "vehicle — you can reply with a 👍, or just tell me when you're done."
+            )
+
+    # ── Vehicle not charging — restart sent, waiting for screen to go off ────
+    if step == "opt1_await_screen_off":
+        screen_off_phrases = ["off", "gone off", "screen off", "turned off",
+                               "went off", "blank", "done", "yes", "ok", "okay"]
+        if "👍" in msg_raw or any(contains_phrase(msg, p) for p in screen_off_phrases):
+            charger_uuid = state.get("charger_uuid", "")
+            charger_name = state.get("charger_name", "your charger")
+            user_states[user_id] = {**state, "step": "opt1_restarting"}
+            threading.Thread(
+                target=lambda: poll_charger_and_notify_online(
+                    user_id, charger_uuid, charger_name,
+                    next_step="await_restart_result",
+                    question="Is your vehicle now charging?",
+                    fault_type="Vehicle not charging"
+                ),
+                daemon=True
+            ).start()
+            return (
+                "Great, thanks for letting me know! 😊 I'm now checking that it's "
+                "back online — I'll message you as soon as it's ready to plug back in. ⏳"
+            )
+        else:
+            return (
+                "No rush — just let me know once you see the charger *screen go off*, "
+                "and I'll take it from there."
+            )
+
+    # ── Vehicle not charging — restart in progress, polling in the background ─
+    if step == "opt1_restarting":
+        return (
+            "⏳ Still checking on the charger's status — I'll message you as soon as it's "
+            "back online and ready to plug back in. Thanks for your patience!"
+        )
 
     # ── After remote restart — vehicle not charging ───────────────────────────
     if step == "await_restart_result":
