@@ -2690,13 +2690,12 @@ def webhook():
 
     # ── Build TwiML response ──────────────────────────────────────────────────
     resp = MessagingResponse()
+    resp.message(response_text)
     if media_url:
-        msg = resp.message(response_text)
-        msg.media(media_url)
+        media_msg = resp.message()
+        media_msg.media(media_url)
         is_video = media_url.lower().endswith((".mp4", ".mp4.mp4", ".mov"))
-        log.info(f"📎 Sending {'video' if is_video else 'image'} with message: {media_url}")
-    else:
-        resp.message(response_text)
+        log.info(f"📎 Sending {'video' if is_video else 'image'} (no caption): {media_url}")
 
     return str(resp)
 
