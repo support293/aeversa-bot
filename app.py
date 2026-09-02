@@ -962,6 +962,7 @@ GREETING = (
     "My name is *AE-Ace* and I am here to get you charged up. ⚡\n\n"
     "To get started, please send me a photo of the *Charger ID sticker*, "
     "or type the *Charger ID*.\n\n"
+    "📸 See reference image below for where to find it.\n\n"
     "I will read it and check your charger's status immediately!"
 )
 
@@ -1008,7 +1009,8 @@ def offline_message(charger_name: str) -> str:
 def restart_message(charger_name: str) -> str:
     return (
         f"🔄 I am restarting *Charger {charger_name}* remotely right now...\n\n"
-        "Please *unplug your vehicle*, wait *2 minutes*, then plug back in firmly.\n\n"
+        "Please *unplug your vehicle*, wait *2 minutes*, then plug back in firmly. "
+        "🎥 See the video below for how.\n\n"
         "Is your vehicle now charging?\n\n"
         "Reply *YES* or *NO*"
     )
@@ -1353,7 +1355,8 @@ def handle_qr_or_image(user_id: str, state: dict,
         "Please try one of these:\n\n"
         "📷 Send a clearer photo of the *Charger ID sticker*\n"
         "✍️ Type the *Charger ID* as shown on the unit\n\n"
-        "💡 _Tip: Make sure the image is well-lit and in focus._",
+        "💡 _Tip: Make sure the image is well-lit and in focus._\n\n"
+        "📸 See an example reference photo below.",
         get_media("charger_id_northgate")
     )
 
@@ -1551,8 +1554,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 ai_reply = ai_result.get("reply", "")
                 user_states[user_id] = {**state, "step": "await_qr", "kb_answered": True}
                 media_key = ai_result.get("media")
+                video_note = "\n\n🎥 See the video below." if media_key else ""
                 return (
-                    f"{ai_reply}\n\n"
+                    f"{ai_reply}{video_note}\n\n"
                     "---\n"
                     "Did that answer your question? 😊 If you still need help with a specific charger, "
                     "just send me a photo of the Charger ID sticker, or type the Charger ID — "
@@ -1617,8 +1621,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 ai_reply = ai_result.get("reply", "")
                 user_states[user_id] = {**state, "kb_answered": True}
                 media_key = ai_result.get("media")
+                video_note = "\n\n🎥 See the video below." if media_key else ""
                 return (
-                    f"{ai_reply}\n\n"
+                    f"{ai_reply}{video_note}\n\n"
                     "---\n"
                     "Did that answer your question? 😊 If you still need help with a specific charger, "
                     "just send me a photo of the Charger ID sticker, or type the Charger ID — "
@@ -1726,8 +1731,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 ai_reply = ai_result.get("reply", "")
                 user_states[user_id] = {**state, "kb_answered": True}
                 media_key = ai_result.get("media")
+                video_note = "\n\n🎥 See the video below." if media_key else ""
                 return (
-                    f"{ai_reply}\n\n"
+                    f"{ai_reply}{video_note}\n\n"
                     "---\n"
                     "Did that answer your question? 😊 If you still need help with a specific charger, "
                     "just send me a photo of the Charger ID sticker, or type the Charger ID — "
@@ -1856,7 +1862,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 return (
                     f"It sounds like your vehicle isn't charging — "
                     f"let me restart *{charger_name}* remotely right now. 🔄\n\n"
-                    "Please unplug, wait 2 minutes, then plug back in.\n\n"
+                    "Please unplug, wait 2 minutes, then plug back in. "
+                    "🎥 See the video below for how.\n\n"
                     "Is your vehicle now charging?\n\nReply *YES* or *NO*",
                     get_media("cable_plugin")
                 )
@@ -1874,8 +1881,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             elif intent == "general":
                 ai_reply = ai_result.get("reply", "")
                 media_key = ai_result.get("media")
+                video_note = "\n\n🎥 See the video below." if media_key else ""
                 return (
-                    f"{ai_reply}\n\n"
+                    f"{ai_reply}{video_note}\n\n"
                     "---\n"
                     "Did that help? 😊 If not, just tell me a bit more and I'll keep helping.",
                     get_media(media_key) if media_key else None
@@ -2000,8 +2008,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             user_states[user_id] = {**state, "step": "something_else_followup",
                                      "extra_notes": description}
             media_key = ai_result.get("media")
+            video_note = "\n\n🎥 See the video below." if media_key else ""
             return (
-                f"{ai_reply}\n\n"
+                f"{ai_reply}{video_note}\n\n"
                 "---\n"
                 "Did this help?\n\n"
                 "✅ Type *RESOLVED* if your issue is sorted\n"
@@ -2308,7 +2317,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             user_states[user_id] = {**state, "step": "opt3_wattspot_wifi"}
             return (
                 "📍 *Wattspot Site*\n\n"
-                "Please check the *WiFi symbol at the top of the charger.*\n\n"
+                "Please check the *WiFi symbol at the top of the charger* "
+                "(see reference image below).\n\n"
                 "Is the WiFi symbol *White* or *Red*?\n\n"
                 "Reply *WHITE* or *RED*",
                 get_media("wifi_symbol_wattspot")
@@ -2317,8 +2327,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             user_states[user_id] = {**state, "step": "opt3_other_4g"}
             return (
                 "📍 *Other Site*\n\n"
-                "Please check the *bottom left of the charger screen.*\n\n"
-                "📸 Please send a photo of the charger screen.\n\n"
+                "Please check the *bottom left of the charger screen* "
+                "(see reference image below for what to look for).\n\n"
+                "📸 Please also send a photo of your charger screen.\n\n"
                 "What do you see?\n\n"
                 "Reply:\n"
                 "*1* – 4G symbol is greyed out\n"
@@ -2460,7 +2471,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return (
                 "📷 I received your image but couldn't identify the charger from it.\n\n"
                 "Please type the *Charger ID* manually.\n\n"
-                "📍 The sticker is on the *front of the charger, underneath the screen.*",
+                "📍 The sticker is on the *front of the charger, underneath the screen* "
+                "— see reference image below.",
                 get_media("charger_id_northgate")
             )
         charger_id = msg_raw.strip()
@@ -2511,7 +2523,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return (
                 "No problem! 😊\n\n"
                 "Can you find the *Charger ID* on the unit?\n\n"
-                "📍 The sticker is on the *front of the charger, underneath the screen.*\n\n"
+                "📍 The sticker is on the *front of the charger, underneath the screen* "
+                "— see reference image below.\n\n"
                 "Please type it or send a photo of the sticker.",
                 get_media("charger_id_northgate")
             )
@@ -2520,7 +2533,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         return (
             f"Thank you — noted that you are at *{site}*.\n\n"
             "What is the *Charger ID*?\n\n"
-            "📍 The sticker is on the *front of the charger, underneath the screen.*\n\n"
+            "📍 The sticker is on the *front of the charger, underneath the screen* "
+            "— see reference image below.\n\n"
             "Please type it or send a photo of the sticker.",
             get_media("charger_id_northgate")
         )
@@ -2581,7 +2595,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         if any(phrase in msg for phrase in CONFUSION_PHRASES):
             return (
                 "📍 The *Charger ID* sticker is on the *front of the charger, "
-                "underneath the screen.*\n\n"
+                "underneath the screen* — see reference image below.\n\n"
                 "It is a combination of letters and numbers.\n\n"
                 "💡 You can also send a *photo of the sticker* — I'll read it! 📷\n\n"
                 "Or type *AGENT* to skip this and speak to someone directly.",
@@ -2677,12 +2691,10 @@ def webhook():
     # ── Build TwiML response ──────────────────────────────────────────────────
     resp = MessagingResponse()
     if media_url:
-        resp.message(response_text)
+        msg = resp.message(response_text)
+        msg.media(media_url)
         is_video = media_url.lower().endswith((".mp4", ".mp4.mp4", ".mov"))
-        caption  = "📹 *Guide video*" if is_video else "📸 *Reference image*"
-        media_msg = resp.message(caption)
-        media_msg.media(media_url)
-        log.info(f"📎 Sending {'video' if is_video else 'image'}: {media_url}")
+        log.info(f"📎 Sending {'video' if is_video else 'image'} with message: {media_url}")
     else:
         resp.message(response_text)
 
