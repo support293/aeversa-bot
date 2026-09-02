@@ -639,14 +639,15 @@ def poll_charger_and_notify_online(user_id: str, charger_uuid: str, charger_name
                                     next_step: str = "await_slow_restart_result",
                                     question: str = "Is the charging speed better now?",
                                     fault_type: str = "Slow charging",
+                                    action_line: str = "Please plug your vehicle back in now.",
                                     timeout_secs: int = 120, interval_secs: int = 10):
     """
-    Runs in a background thread after a remote restart (used by both the
-    slow-charging and vehicle-not-charging flows). Polls Ampcontrol until
-    the charger reports back online, then proactively messages the customer
-    with the go-ahead to plug back in and the appropriate follow-up
-    question. If it doesn't come back online within timeout_secs, escalates
-    to an agent automatically instead of leaving the customer waiting.
+    Runs in a background thread after a remote restart (used by the slow-
+    charging, vehicle-not-charging, and stuck-cable flows). Polls Ampcontrol
+    until the charger reports back online, then proactively messages the
+    customer with the appropriate next action and follow-up question. If it
+    doesn't come back online within timeout_secs, escalates to an agent
+    automatically instead of leaving the customer waiting.
     """
     elapsed = 0
     while elapsed < timeout_secs:
@@ -657,7 +658,7 @@ def poll_charger_and_notify_online(user_id: str, charger_uuid: str, charger_name
             log.info(f"✅ Charger {charger_name} back online after {elapsed}s — notifying {user_id}")
             send_whatsapp_message(
                 user_id,
-                f"✅ Good news — *{charger_name}* is back online! Please plug your vehicle back in now.\n\n"
+                f"✅ Good news — *{charger_name}* is back online! {action_line}\n\n"
                 f"{question}\n\nReply *YES* or *NO*"
             )
             current = user_states.get(user_id, {})
@@ -2143,7 +2144,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     user_id, charger_uuid, charger_name,
                     next_step="something_else_after_restart_result",
                     question="Is the cable free and is your issue resolved now?",
-                    fault_type="Other issue — restart attempted"
+                    fault_type="Other issue — restart attempted",
+                    action_line="Please try the cable now — it should be free."
                 ),
                 daemon=True
             ).start()
