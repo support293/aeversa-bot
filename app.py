@@ -74,7 +74,9 @@ MID_FLOW_STEPS = {
     "await_restart_result", "await_slow_restart_result",
     "issue_menu", "manual_issue_menu",
     "pre_escalate_site", "pre_escalate_charger_id",
-    "something_else", "confirm_restart",
+    "something_else", "something_else_followup", "something_else_await_screen_off",
+    "something_else_after_restart_result",
+    "confirm_restart",
 }
 
 # Steps where the customer is specifically answering a YES/NO question
@@ -2073,9 +2075,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
         if intent == "general" and ai_result:
             ai_reply = ai_result.get("reply", "")
-            user_states[user_id] = {**state, "step": "something_else_followup",
-                                     "extra_notes": description}
             media_key = ai_result.get("media")
+            user_states[user_id] = {**state, "step": "something_else_followup",
+                                     "extra_notes": description, "media_topic": media_key}
             video_note = "\n\n🎥 See the video below." if media_key else ""
             return (
                 f"{ai_reply}{video_note}\n\n"
@@ -2101,11 +2103,80 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             user_states[user_id] = {"step": "start"}
             return GREAT_NEWS
         def no_fn():
+            charger_uuid = state.get("charger_uuid", "")
+            charger_name = state.get("charger_name", "your charger")
+            # If this was a stuck-cable/stop-session issue, a remote restart
+            # is genuinely worth trying before escalating — the same thing
+            # an agent would do. Skip straight to the screen-off check since
+            # there's nothing to unplug first on a stuck cable.
+            if state.get("media_topic") == "video_how_to_stop" and charger_uuid:
+                user_states[user_id] = {**state, "step": "something_else_await_screen_off"}
+                threading.Thread(
+                    target=lambda: restart_charger(charger_uuid), daemon=True
+                ).start()
+                return (
+                    f"No problem — let me try restarting *{charger_name}* remotely, "
+                    "this often releases a stuck cable. 🔄\n\n"
+                    "Please keep an eye on the charger screen — once it *goes off* "
+                    "(that's the restart taking effect), just let me know and I'll "
+                    "check when it's back online for you. 👀"
+                )
             return start_escalation(user_id, state,
                 "No problem, let me get an agent to assist you. 😊")
         if msg in ["resolved", "yes"]:
             return yes_fn()
         elif msg in ["agent", "no"]:
+            return no_fn()
+        else:
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
+
+    # ── Cable/stop issue — restart sent, waiting for screen to go off ────────
+    if step == "something_else_await_screen_off":
+        screen_off_phrases = ["off", "gone off", "screen off", "turned off",
+                               "went off", "blank", "done", "yes", "ok", "okay"]
+        if "👍" in msg_raw or any(contains_phrase(msg, p) for p in screen_off_phrases):
+            charger_uuid = state.get("charger_uuid", "")
+            charger_name = state.get("charger_name", "your charger")
+            user_states[user_id] = {**state, "step": "something_else_restarting"}
+            threading.Thread(
+                target=lambda: poll_charger_and_notify_online(
+                    user_id, charger_uuid, charger_name,
+                    next_step="something_else_after_restart_result",
+                    question="Is the cable free and is your issue resolved now?",
+                    fault_type="Other issue — restart attempted"
+                ),
+                daemon=True
+            ).start()
+            return (
+                "Great, thanks for letting me know! 😊 I'm now checking that it's "
+                "back online — I'll message you as soon as it's ready. ⏳"
+            )
+        else:
+            return (
+                "No rush — just let me know once you see the charger *screen go off*, "
+                "and I'll take it from there."
+            )
+
+    # ── Cable/stop issue — restart in progress, polling in the background ────
+    if step == "something_else_restarting":
+        return (
+            "⏳ Still checking on the charger's status — I'll message you as soon as "
+            "it's ready. Thanks for your patience!"
+        )
+
+    # ── After remote restart — cable/stop issue ───────────────────────────────
+    if step == "something_else_after_restart_result":
+        QUESTION = "Is the cable free and is your issue resolved now?"
+        def yes_fn():
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        def no_fn():
+            return start_escalation(user_id, state,
+                "I'm sorry the restart didn't resolve the issue. 😔\n\n"
+                "Our support team will take over from here.")
+        if msg == "yes":
+            return yes_fn()
+        elif msg == "no":
             return no_fn()
         else:
             return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
