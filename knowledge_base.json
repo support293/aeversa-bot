@@ -299,7 +299,7 @@
     {
       "category": "Charger & Site",
       "question": "The cable is stuck and I cannot unplug it, what should I do?",
-      "answer": "Don't worry — do not try to force the cable out! First make sure the charging session has been fully stopped on the charger screen by tapping it twice and pressing Stop, as most vehicles lock the cable during an active session. If the session is stopped and the cable is still stuck, let me know right away and we'll help you sort it — have your Charger ID ready so we can help you faster."
+      "answer": "Don't force the cable! First tap the charger screen twice, then press Stop — this unlocks the cable. Still stuck after that? Just let me know and I'll help."
     },
     {
       "category": "Charger & Site",
