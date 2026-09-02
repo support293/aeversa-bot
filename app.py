@@ -1105,6 +1105,31 @@ CONFUSION_PHRASES = [
     "unclear", "explain", "i need help", "instructions",
 ]
 
+# Words that plausibly indicate an actual fault description, as opposed to
+# a short ambiguous token (e.g. "JAC" or "JAC DBN") that just failed to
+# match a charger name. Used to stop Claude's intent classifier from
+# over-triggering a fault intent on inputs that don't actually contain
+# any fault language.
+FAULT_DESCRIPTION_INDICATORS = [
+    "not", "isn't", "isnt", "wont", "won't", "doesn't", "doesnt",
+    "dont", "don't", "cant", "can't", "cannot", "unable", "no",
+    "slow", "off", "broken", "stuck", "error", "issue", "problem",
+    "wrong", "fault", "fail", "failed", "failing", "stopped", "stop",
+    "blank", "dead", "dark", "flashing", "won't start", "not working",
+]
+
+
+def looks_like_fault_description(text: str) -> bool:
+    """
+    Heuristic check for whether a message plausibly describes an actual
+    fault, versus being a short ambiguous token that just failed to match
+    a charger name (e.g. "JAC", "JAC DBN", "STC-01"). A genuine fault
+    description almost always contains at least one word like "not",
+    "slow", "off", "broken", etc. — a bare attempted charger name doesn't.
+    """
+    msg_lower = text.lower()
+    return any(contains_phrase(msg_lower, w) for w in FAULT_DESCRIPTION_INDICATORS)
+
 
 def interpret_response(msg: str, context: str) -> str:
     """
@@ -1695,7 +1720,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     "and I'll get our team to help identify the correct charger for you. 😊"
                 )
 
-            if intent in ["not_charging", "charger_fault", "charger_off", "slow_charging"]:
+            if intent in ["not_charging", "charger_fault", "charger_off", "slow_charging"] \
+                    and looks_like_fault_description(msg_raw):
                 # Customer is describing a problem — not a charger name
                 if state.get("kb_answered", False):
                     # Already gave advice and it didn't help → escalate
@@ -1909,7 +1935,8 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             ))
             intent = ai_result.get("intent", "unclear") if ai_result else "unclear"
 
-            if intent in ["not_charging", "charger_fault", "charger_off"]:
+            if intent in ["not_charging", "charger_fault", "charger_off"] \
+                    and looks_like_fault_description(msg_raw):
                 active_alerts = get_charger_alerts(charger_uuid)
                 if active_alerts:
                     alert_summary = format_alerts_for_agent(active_alerts)
