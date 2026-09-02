@@ -39,6 +39,7 @@ FROM_EMAIL     = "AE Support Bot <onboarding@resend.dev>"
 AMPCONTROL_CLIENT_ID     = os.environ.get("AMPCONTROL_CLIENT_ID", os.environ.get("AMPCONTROL_EMAIL", ""))
 AMPCONTROL_CLIENT_SECRET = os.environ.get("AMPCONTROL_CLIENT_SECRET", os.environ.get("AMPCONTROL_PASSWORD", ""))
 AMPCONTROL_TOKEN_STORED  = os.environ.get("AMPCONTROL_TOKEN", "")  # Manual token fallback
+AMPCONTROL_NETWORK_ID    = os.environ.get("AMPCONTROL_NETWORK_ID", "")  # Required for GET /alerts/
 AMPCONTROL_BASE          = "https://api.ampcontrol.io/v2"
 
 # Token cache
@@ -597,12 +598,14 @@ def get_charger_status(charger_uuid: str) -> dict:
                          charger.get("ocppId") or
                          f"Charger ...{charger_uuid[-6:]}")
         is_online = online_status == "ONLINE"
-        log.info(f"Charger '{name}' → onlineStatus={online_status} ocppStatus={ocpp_status}")
+        network_id = charger.get("networkId", "")
+        log.info(f"Charger '{name}' → onlineStatus={online_status} ocppStatus={ocpp_status} networkId={network_id}")
         return {
             "online": is_online,
             "name":   name,
             "status": online_status,
             "ocpp":   ocpp_status,
+            "network_id": network_id,
             "raw":    charger
         }
 
@@ -629,20 +632,34 @@ def get_charger_status(charger_uuid: str) -> dict:
     return {"online": None, "name": "Unknown", "status": "unknown", "raw": {}}
 
 
-def get_charger_alerts(charger_uuid: str) -> list:
+def get_charger_alerts(charger_uuid: str, network_id: str = "") -> list:
     """
     Fetches active alerts for a specific charger from Ampcontrol.
-    Endpoint: GET /v2/alerts/?charger={uuid}
-    Only the confirmed 'charger' query parameter is used here — the exact
-    accepted values for category/urgency filters aren't confirmed against
-    real data, so we deliberately avoid guessing at those and instead
-    filter client-side on the 'active' field from the response schema.
+    Endpoint: GET /v2/alerts/?network={uuid}&charger={uuid}
+    'network' is a REQUIRED parameter on this endpoint (confirmed against
+    the API docs) — without it Ampcontrol returns 422 Unprocessable
+    Content. 'charger' further filters to just this charger.
+
+    Aeversa's organization spans multiple networks (one per site/customer),
+    so the correct network_id must come from the charger's own data
+    (charge-point objects include a 'networkId' field) — a single fixed
+    network can't be assumed. Falls back to AMPCONTROL_NETWORK_ID only if
+    no per-charger network_id is available, for defensiveness.
+
+    The exact accepted values for category/urgency filters aren't
+    confirmed against real data, so we deliberately avoid guessing at
+    those and instead filter client-side on the 'active' field from the
+    response schema.
     """
-    data = ampcontrol_get(f"/alerts/?charger={charger_uuid}")
+    resolved_network_id = network_id or AMPCONTROL_NETWORK_ID
+    if not resolved_network_id:
+        log.warning(f"No network_id available for charger {charger_uuid} — skipping alert check")
+        return []
+    data = ampcontrol_get(f"/alerts/?network={resolved_network_id}&charger={charger_uuid}")
     if not data or not data.get("data"):
         return []
     active_alerts = [a for a in data["data"] if a.get("active")]
-    log.info(f"Charger {charger_uuid} → {len(active_alerts)} active alert(s) found")
+    log.info(f"Charger {charger_uuid} (network {resolved_network_id}) → {len(active_alerts)} active alert(s) found")
     return active_alerts
 
 
@@ -1475,10 +1492,11 @@ def lookup_charger_and_respond(user_id: str, state: dict,
         "charger_uuid":  charger_uuid,
         "charger_id":    charger_uuid,   # also store as charger_id for escalation
         "charger_name":  friendly_name,
+        "network_id":    charger.get("network_id", ""),
     }
 
     if charger["online"] is True:
-        active_alerts = get_charger_alerts(charger_uuid)
+        active_alerts = get_charger_alerts(charger_uuid, base_state.get("network_id", ""))
         if active_alerts:
             alert_summary = format_alerts_for_agent(active_alerts)
             escalate_state = {**base_state, "fault_type": "Active charger alert",
@@ -1923,7 +1941,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
         if msg == "1":
             # Vehicle not charging — check for active alerts before trying a restart
-            active_alerts = get_charger_alerts(charger_uuid)
+            active_alerts = get_charger_alerts(charger_uuid, state.get("network_id", ""))
             if active_alerts:
                 alert_summary = format_alerts_for_agent(active_alerts)
                 return start_escalation(
@@ -1972,7 +1990,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
             if intent in ["not_charging", "charger_fault", "charger_off"] \
                     and looks_like_fault_description(msg_raw):
-                active_alerts = get_charger_alerts(charger_uuid)
+                active_alerts = get_charger_alerts(charger_uuid, state.get("network_id", ""))
                 if active_alerts:
                     alert_summary = format_alerts_for_agent(active_alerts)
                     return start_escalation(
