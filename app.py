@@ -73,7 +73,7 @@ MID_FLOW_STEPS = {
     "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_wifi",
     "opt3_wattspot_replug", "opt3_other_4g", "opt3_other_final_restart",
     "await_restart_result", "await_slow_restart_result",
-    "emergency_stop_check",
+    "emergency_stop_check", "emergency_stop_replug_result",
     "issue_menu", "manual_issue_menu",
     "pre_escalate_site", "pre_escalate_charger_id",
     "something_else", "something_else_followup", "something_else_await_screen_off",
@@ -90,7 +90,7 @@ YES_NO_STEPS = [
     "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_after_wait",
     "opt3_wattspot_replug", "opt3_other_final_restart",
     "await_restart_result", "await_slow_restart_result",
-    "emergency_stop_check",
+    "emergency_stop_check", "emergency_stop_replug_result",
 ]
 
 # ── Media Library ─────────────────────────────────────────────────────────────
@@ -2196,12 +2196,34 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
     if step == "emergency_stop_check":
         QUESTION = "Have you released the emergency stop button?"
         def yes_fn():
-            user_states[user_id] = {"step": "start"}
-            return GREAT_NEWS
+            user_states[user_id] = {**state, "step": "emergency_stop_replug_result"}
+            return (
+                "Great, thanks for letting me know! 😊\n\n"
+                "Since the emergency stop was pressed, you'll need to *unplug your "
+                "vehicle and plug it back in* to start a new charging session.\n\n"
+                "Is it charging now?\n\nReply *YES* or *NO*"
+            )
         def no_fn():
             return start_escalation(user_id, state,
                 "No problem, let me connect you with a support agent who can help "
                 "directly. 😊")
+        if msg == "yes":
+            return yes_fn()
+        elif msg == "no":
+            return no_fn()
+        else:
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
+
+    # ── After releasing emergency stop — confirm charging actually resumed ────
+    if step == "emergency_stop_replug_result":
+        QUESTION = "Is it charging now?"
+        def yes_fn():
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        def no_fn():
+            return start_escalation(user_id, state,
+                "I'm sorry that didn't resolve it. 😔\n\n"
+                "Our support team will take over from here.")
         if msg == "yes":
             return yes_fn()
         elif msg == "no":
