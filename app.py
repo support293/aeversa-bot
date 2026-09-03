@@ -2254,7 +2254,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 target=lambda: poll_charger_and_notify_online(
                     user_id, charger_uuid, charger_name,
                     next_step="await_restart_result",
-                    question="Is your vehicle now charging?",
+                    question="Is your vehicle charging?",
                     fault_type="Vehicle not charging"
                 ),
                 daemon=True
@@ -2332,7 +2332,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         if has_media and not msg_raw.strip():
             return ("Is your vehicle now charging after the restart?\n\nReply *YES* or *NO*", None)
         charger_name = state.get("charger_name", "your charger")
-        QUESTION = "Is your vehicle now charging?"
+        QUESTION = "Is your vehicle charging?"
         def yes_fn():
             user_states[user_id] = {"step": "start"}
             return GREAT_NEWS
@@ -2524,7 +2524,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return (
                 "✅ Good.\n\n"
                 "Please *unplug the charging cable*, wait 5 seconds and plug it back in firmly into the vehicle. Please see the video below.\n\n"
-                "Has this fixed the issue? Is your vehicle now charging?\n\n"
+                "Has this fixed the issue? Is your vehicle charging?\n\n"
                 "Reply *YES* or *NO*",
                 get_media("cable_plugin")
             )
@@ -2534,14 +2534,14 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 "No problem!\n\n"
                 "Please *remove the key from the ignition*, make sure the vehicle is switched off, "
                 "and then try to charge again.\n\n"
-                "Is your vehicle now charging?\n\n"
+                "Is your vehicle charging?\n\n"
                 "Reply *YES* or *NO*"
             )
         else:
             return "Please reply *YES* or *NO*. Is your vehicle switched off and key removed from the ignition?"
 
     if step == "opt1_replug_fixed":
-        QUESTION = "Has this fixed the issue? Is your vehicle now charging?"
+        QUESTION = "Has this fixed the issue? Is your vehicle charging?"
         if msg == "yes":
             user_states[user_id] = {"step": "start"}
             return GREAT_NEWS
@@ -2562,7 +2562,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
 
     if step == "opt1_removed_key_try":
-        QUESTION = "Is your vehicle now charging?"
+        QUESTION = "Is your vehicle charging?"
         if msg == "yes":
             user_states[user_id] = {"step": "start"}
             return GREAT_NEWS
@@ -2823,7 +2823,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 "✅ The charger is *online* (WiFi is white).\n\n"
                 "Please *unplug the charging cable* from the vehicle, "
                 "wait 30 seconds, and plug it back in firmly.\n\n"
-                "Is your vehicle now charging?\n\n"
+                "Is your vehicle charging?\n\n"
                 "Reply *YES* or *NO*"
             )
         elif msg == "red":
@@ -2840,7 +2840,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return start_escalation(user_id, state,
                 "I'm sorry the issue persists. 😔\n\nOur support team will investigate further.")
         else:
-            return "Please reply *YES* or *NO*. Is your vehicle now charging?"
+            return "Please reply *YES* or *NO*. Is your vehicle charging?"
 
     # ── Other Site Flow ───────────────────────────────────────────────────────
 
