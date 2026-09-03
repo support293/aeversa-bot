@@ -634,7 +634,7 @@ def get_charger_status(charger_uuid: str) -> dict:
 
 def get_charger_alerts(charger_uuid: str, network_id: str = "") -> list:
     """
-    Fetches active alerts for a specific charger from Ampcontrol.
+    Fetches unresolved alerts for a specific charger from Ampcontrol.
     Endpoint: GET /v2/alerts/?network={uuid}&charger={uuid}
     'network' is a REQUIRED parameter on this endpoint (confirmed against
     the API docs) — without it Ampcontrol returns 422 Unprocessable
@@ -646,10 +646,13 @@ def get_charger_alerts(charger_uuid: str, network_id: str = "") -> list:
     network can't be assumed. Falls back to AMPCONTROL_NETWORK_ID only if
     no per-charger network_id is available, for defensiveness.
 
-    The exact accepted values for category/urgency filters aren't
-    confirmed against real data, so we deliberately avoid guessing at
-    those and instead filter client-side on the 'active' field from the
-    response schema.
+    IMPORTANT: the 'active' field does NOT indicate whether an alert is
+    still unresolved — confirmed against real data that a resolved alert
+    can still have active=true (and 'end' can be null even when resolved,
+    so that's not reliable either). The correct field is 'status'. We
+    exclude the confirmed value "Resolved" rather than whitelisting a
+    specific "unresolved" value, since the full set of non-resolved status
+    strings (Active/Open/New/etc.) isn't confirmed against real data.
     """
     resolved_network_id = network_id or AMPCONTROL_NETWORK_ID
     if not resolved_network_id:
@@ -658,9 +661,9 @@ def get_charger_alerts(charger_uuid: str, network_id: str = "") -> list:
     data = ampcontrol_get(f"/alerts/?network={resolved_network_id}&charger={charger_uuid}")
     if not data or not data.get("data"):
         return []
-    active_alerts = [a for a in data["data"] if a.get("active")]
-    log.info(f"Charger {charger_uuid} (network {resolved_network_id}) → {len(active_alerts)} active alert(s) found")
-    return active_alerts
+    unresolved_alerts = [a for a in data["data"] if a.get("status") != "Resolved"]
+    log.info(f"Charger {charger_uuid} (network {resolved_network_id}) → {len(unresolved_alerts)} unresolved alert(s) found")
+    return unresolved_alerts
 
 
 def format_alerts_for_agent(alerts: list) -> str:
