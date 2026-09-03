@@ -73,6 +73,7 @@ MID_FLOW_STEPS = {
     "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_wifi",
     "opt3_wattspot_replug", "opt3_other_4g", "opt3_other_final_restart",
     "await_restart_result", "await_slow_restart_result",
+    "emergency_stop_check",
     "issue_menu", "manual_issue_menu",
     "pre_escalate_site", "pre_escalate_charger_id",
     "something_else", "something_else_followup", "something_else_await_screen_off",
@@ -89,6 +90,7 @@ YES_NO_STEPS = [
     "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_after_wait",
     "opt3_wattspot_replug", "opt3_other_final_restart",
     "await_restart_result", "await_slow_restart_result",
+    "emergency_stop_check",
 ]
 
 # ── Media Library ─────────────────────────────────────────────────────────────
@@ -718,6 +720,21 @@ def format_alerts_for_agent(alerts: list) -> str:
     if len(unique_alerts) > 3:
         lines.append(f"...and {len(unique_alerts) - 3} more active alert(s)")
     return "\n".join(lines)
+
+
+def is_emergency_stop_alert(alert: dict) -> bool:
+    """
+    Detects the specific FAULTED alert caused by the physical emergency
+    stop button being pressed on the charger — confirmed against real
+    data as OCPP error code 258 appearing in the alert's description
+    (e.g. "Reported errors: 258, OtherError"). Matches on a word boundary
+    so it doesn't false-match a different code like "1258" or "2580".
+    This is deliberately narrow — only this one confirmed code triggers
+    the emergency-stop guidance; every other alert type still escalates
+    normally.
+    """
+    description = alert.get("description", "") or ""
+    return contains_phrase(description, "258")
 
 
 def restart_charger(charger_uuid: str) -> bool:
@@ -1526,6 +1543,19 @@ def lookup_charger_and_respond(user_id: str, state: dict,
         active_alerts = get_charger_alerts(charger_uuid, base_state.get("network_id", ""))
         if active_alerts:
             alert_summary = format_alerts_for_agent(active_alerts)
+            if any(is_emergency_stop_alert(a) for a in active_alerts):
+                user_states[user_id] = {**base_state, "step": "emergency_stop_check",
+                                         "fault_type": "Possible emergency stop pressed",
+                                         "extra_notes": alert_summary}
+                return (
+                    f"I can see that you are at charger, *{friendly_name}*, and it's "
+                    "online — but it looks like the *emergency stop* button may have "
+                    "been pressed on this charger. 🛑\n\n"
+                    "Could you please check the charger for a red emergency stop "
+                    "button, and if it's pressed in, twist or pull it to release it?\n\n"
+                    "Reply *YES* once you've released it, or *NO* if you can't find one.",
+                    None
+                )
             escalate_state = {**base_state, "fault_type": "Active charger alert",
                                "extra_notes": alert_summary}
             return (
@@ -1971,6 +2001,17 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             active_alerts = get_charger_alerts(charger_uuid, state.get("network_id", ""))
             if active_alerts:
                 alert_summary = format_alerts_for_agent(active_alerts)
+                if any(is_emergency_stop_alert(a) for a in active_alerts):
+                    user_states[user_id] = {**state, "step": "emergency_stop_check",
+                                             "fault_type": "Possible emergency stop pressed",
+                                             "extra_notes": alert_summary}
+                    return (
+                        "It looks like the *emergency stop* button may have been "
+                        "pressed on this charger. 🛑\n\n"
+                        "Could you please check the charger for a red emergency stop "
+                        "button, and if it's pressed in, twist or pull it to release it?\n\n"
+                        "Reply *YES* once you've released it, or *NO* if you can't find one."
+                    )
                 return start_escalation(
                     user_id,
                     {**state, "fault_type": "Vehicle not charging", "extra_notes": alert_summary},
@@ -2020,6 +2061,18 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 active_alerts = get_charger_alerts(charger_uuid, state.get("network_id", ""))
                 if active_alerts:
                     alert_summary = format_alerts_for_agent(active_alerts)
+                    if any(is_emergency_stop_alert(a) for a in active_alerts):
+                        user_states[user_id] = {**state, "step": "emergency_stop_check",
+                                                 "fault_type": "Possible emergency stop pressed",
+                                                 "extra_notes": alert_summary}
+                        return (
+                            "It looks like the *emergency stop* button may have been "
+                            "pressed on this charger. 🛑\n\n"
+                            "Could you please check the charger for a red emergency "
+                            "stop button, and if it's pressed in, twist or pull it to "
+                            "release it?\n\n"
+                            "Reply *YES* once you've released it, or *NO* if you can't find one."
+                        )
                     return start_escalation(
                         user_id,
                         {**state, "fault_type": "Vehicle not charging", "extra_notes": alert_summary},
@@ -2133,6 +2186,23 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             "⏳ Still checking on the charger's status — I'll message you as soon as it's "
             "back online and ready to plug back in. Thanks for your patience!"
         )
+
+    # ── Emergency stop button check (specific to OCPP error 258) ─────────────
+    if step == "emergency_stop_check":
+        QUESTION = "Have you released the emergency stop button?"
+        def yes_fn():
+            user_states[user_id] = {"step": "start"}
+            return GREAT_NEWS
+        def no_fn():
+            return start_escalation(user_id, state,
+                "No problem, let me connect you with a support agent who can help "
+                "directly. 😊")
+        if msg == "yes":
+            return yes_fn()
+        elif msg == "no":
+            return no_fn()
+        else:
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
 
     # ── After remote restart — vehicle not charging ───────────────────────────
     if step == "await_restart_result":
