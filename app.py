@@ -35,16 +35,56 @@ SUPPORT_EMAIL  = "support@aeversa.com"
 FROM_EMAIL     = "AE Support Bot <onboarding@resend.dev>"
 
 # ── Ampcontrol Configuration ──────────────────────────────────────────────────
-# Service Account credentials (from Ampcontrol portal → Service Accounts)
-AMPCONTROL_CLIENT_ID     = os.environ.get("AMPCONTROL_CLIENT_ID", os.environ.get("AMPCONTROL_EMAIL", ""))
-AMPCONTROL_CLIENT_SECRET = os.environ.get("AMPCONTROL_CLIENT_SECRET", os.environ.get("AMPCONTROL_PASSWORD", ""))
-AMPCONTROL_TOKEN_STORED  = os.environ.get("AMPCONTROL_TOKEN", "")  # Manual token fallback
-AMPCONTROL_NETWORK_ID    = os.environ.get("AMPCONTROL_NETWORK_ID", "")  # Required for GET /alerts/
-AMPCONTROL_BASE          = "https://api.ampcontrol.io/v2"
+# Multi-organization support: Aeversa has separate Ampcontrol Service
+# Accounts per organization (there is no single account spanning all of
+# them). Configure each org as AMPCONTROL_ORG_<n>_NAME / _CLIENT_ID /
+# _CLIENT_SECRET in Render, numbered from 1 with no gaps. The bot searches
+# every configured org in turn when identifying a charger.
+AMPCONTROL_BASE       = "https://api.ampcontrol.io/v2"
+AMPCONTROL_NETWORK_ID = os.environ.get("AMPCONTROL_NETWORK_ID", "")  # legacy single-org fallback only
 
-# Token cache
-_ampcontrol_token: str = ""
-_ampcontrol_token_expiry: float = 0.0
+def _load_ampcontrol_orgs() -> list[dict]:
+    orgs = []
+    i = 1
+    while True:
+        client_id     = os.environ.get(f"AMPCONTROL_ORG_{i}_CLIENT_ID")
+        client_secret = os.environ.get(f"AMPCONTROL_ORG_{i}_CLIENT_SECRET")
+        if not (client_id and client_secret):
+            break
+        name = os.environ.get(f"AMPCONTROL_ORG_{i}_NAME", f"Org {i}")
+        orgs.append({"index": i, "name": name, "client_id": client_id, "client_secret": client_secret})
+        i += 1
+
+    if orgs:
+        return orgs
+
+    # Backward compatibility: no numbered orgs configured yet — fall back
+    # to the original single-account env vars as "org 1" so the bot keeps
+    # working for the Aeversa org while additional orgs are being set up.
+    legacy_client_id     = os.environ.get("AMPCONTROL_CLIENT_ID", os.environ.get("AMPCONTROL_EMAIL", ""))
+    legacy_client_secret = os.environ.get("AMPCONTROL_CLIENT_SECRET", os.environ.get("AMPCONTROL_PASSWORD", ""))
+    if legacy_client_id and legacy_client_secret:
+        orgs.append({"index": 1, "name": "Aeversa", "client_id": legacy_client_id, "client_secret": legacy_client_secret})
+    return orgs
+
+AMPCONTROL_ORGS = _load_ampcontrol_orgs()
+
+def get_org_by_index(org_index) -> dict | None:
+    """Looks up a configured org by its index, as stored in conversation state."""
+    if org_index is None:
+        return None
+    for org in AMPCONTROL_ORGS:
+        if org["index"] == org_index:
+            return org
+    return None
+
+# Manual token override — only ever applies to org 1, for quick manual
+# testing. Not meaningful across multiple orgs, so kept as a narrow
+# legacy convenience rather than extended to every org.
+AMPCONTROL_TOKEN_STORED = os.environ.get("AMPCONTROL_TOKEN", "")
+
+# Token cache — one cached token per organization, keyed by org index
+_ampcontrol_tokens: dict[int, dict] = {}   # {org_index: {"token": str, "expiry": float}}
 _ampcontrol_lock = threading.Lock()
 
 # ── Agent Configuration ────────────────────────────────────────────────────────
@@ -482,61 +522,68 @@ def handle_agent_command(sender: str, command: str) -> str:
 
 # ── Ampcontrol API ────────────────────────────────────────────────────────────
 
-def get_ampcontrol_token() -> str:
+def get_ampcontrol_token(org: dict) -> str:
     """
-    Returns a valid Ampcontrol bearer token using Service Account authentication.
+    Returns a valid Ampcontrol bearer token for the given org, using
+    Service Account authentication.
     Endpoint: POST /v2/service_accounts/token/
     Payload:  {"clientId": "...", "secret": "..."}
     Expiry:   1080 seconds (18 minutes) — auto-refreshed
+    Cached per organization, since each org has its own credentials.
     """
-    global _ampcontrol_token, _ampcontrol_token_expiry
+    org_index = org["index"]
     with _ampcontrol_lock:
-        # Priority 1: Pre-stored manual token
-        if AMPCONTROL_TOKEN_STORED:
-            log.info("Using pre-stored AMPCONTROL_TOKEN")
+        # Priority 1: Pre-stored manual token — only ever applies to org 1
+        if org_index == 1 and AMPCONTROL_TOKEN_STORED:
+            log.info("Using pre-stored AMPCONTROL_TOKEN (org 1 only)")
             return AMPCONTROL_TOKEN_STORED
 
         # Priority 2: Cached token still valid (with 60 second buffer)
-        if _ampcontrol_token and datetime.now().timestamp() < _ampcontrol_token_expiry - 60:
-            return _ampcontrol_token
+        cached = _ampcontrol_tokens.get(org_index)
+        if cached and datetime.now().timestamp() < cached["expiry"] - 60:
+            return cached["token"]
 
-        if not AMPCONTROL_CLIENT_ID or not AMPCONTROL_CLIENT_SECRET:
-            log.warning("Ampcontrol credentials not set — add AMPCONTROL_CLIENT_ID and AMPCONTROL_CLIENT_SECRET to Render")
+        client_id     = org.get("client_id", "")
+        client_secret = org.get("client_secret", "")
+        if not client_id or not client_secret:
+            log.warning(f"Ampcontrol credentials missing for org '{org.get('name')}' (index {org_index})")
             return ""
 
-        log.info(f"Refreshing Ampcontrol service account token for: {AMPCONTROL_CLIENT_ID}")
+        log.info(f"Refreshing Ampcontrol service account token for org '{org.get('name')}' ({client_id})")
 
         try:
             response = requests.post(
                 "https://api.ampcontrol.io/v2/service_accounts/token/",
                 json={
-                    "clientId": AMPCONTROL_CLIENT_ID,
-                    "secret":   AMPCONTROL_CLIENT_SECRET
+                    "clientId": client_id,
+                    "secret":   client_secret
                 },
                 timeout=10
             )
-            log.info(f"Ampcontrol token request → {response.status_code}")
+            log.info(f"Ampcontrol token request for org '{org.get('name')}' → {response.status_code}")
 
             if response.status_code == 200:
                 data = response.json()
                 token      = data["data"][0]["token"]
                 expires_in = data["data"][0].get("expires_in", 1080)  # default 18 min
-                _ampcontrol_token        = token
-                _ampcontrol_token_expiry = datetime.now().timestamp() + expires_in
-                log.info(f"✅ Ampcontrol service account token obtained — expires in {expires_in}s")
+                _ampcontrol_tokens[org_index] = {
+                    "token": token,
+                    "expiry": datetime.now().timestamp() + expires_in
+                }
+                log.info(f"✅ Ampcontrol token obtained for org '{org.get('name')}' — expires in {expires_in}s")
                 return token
             else:
-                log.error(f"❌ Ampcontrol token request failed: {response.status_code} — {response.text[:200]}")
+                log.error(f"❌ Ampcontrol token request failed for org '{org.get('name')}': {response.status_code} — {response.text[:200]}")
                 return ""
 
         except Exception as e:
-            log.error(f"❌ Ampcontrol token exception: {e}")
+            log.error(f"❌ Ampcontrol token exception for org '{org.get('name')}': {e}")
             return ""
 
 
-def ampcontrol_get(endpoint: str) -> dict | None:
-    """Makes an authenticated GET request to Ampcontrol API."""
-    token = get_ampcontrol_token()
+def ampcontrol_get(endpoint: str, org: dict) -> dict | None:
+    """Makes an authenticated GET request to Ampcontrol API for a specific org."""
+    token = get_ampcontrol_token(org)
     if not token:
         return None
     try:
@@ -566,9 +613,9 @@ def ampcontrol_get(endpoint: str) -> dict | None:
         return None
 
 
-def ampcontrol_post(endpoint: str, payload: dict) -> dict | None:
-    """Makes an authenticated POST request to Ampcontrol API."""
-    token = get_ampcontrol_token()
+def ampcontrol_post(endpoint: str, payload: dict, org: dict) -> dict | None:
+    """Makes an authenticated POST request to Ampcontrol API for a specific org."""
+    token = get_ampcontrol_token(org)
     if not token:
         return None
     try:
@@ -588,10 +635,14 @@ def ampcontrol_post(endpoint: str, payload: dict) -> dict | None:
         return None
 
 
-def get_charger_status(charger_uuid: str) -> dict:
+def get_charger_status(charger_uuid: str, org: dict) -> dict:
     """
-    Fetches charger details from Ampcontrol.
+    Fetches charger details from Ampcontrol, within a specific org.
     Endpoint: GET /v2/charge_points/{uuid}/
+    Returns online=None (with name='Unknown') if the charger isn't found
+    in this org, or if this org's API call failed — either way, the
+    caller (find_charger_status_across_orgs) treats that as "try the
+    next org" rather than distinguishing the two cases.
     """
     def parse_charger(charger: dict) -> dict:
         online_status = charger.get("onlineStatus", "").upper()
@@ -603,7 +654,7 @@ def get_charger_status(charger_uuid: str) -> dict:
         is_online = online_status == "ONLINE"
         network_id   = charger.get("networkId", "")
         network_name = charger.get("networkName", "")
-        log.info(f"Charger '{name}' → onlineStatus={online_status} ocppStatus={ocpp_status} networkId={network_id} networkName={network_name}")
+        log.info(f"Charger '{name}' (org '{org.get('name')}') → onlineStatus={online_status} ocppStatus={ocpp_status} networkId={network_id} networkName={network_name}")
         return {
             "online": is_online,
             "name":   name,
@@ -611,11 +662,13 @@ def get_charger_status(charger_uuid: str) -> dict:
             "ocpp":   ocpp_status,
             "network_id":   network_id,
             "network_name": network_name,
+            "org_index":    org["index"],
+            "org_name":     org.get("name", ""),
             "raw":    charger
         }
 
     # Use list search directly (direct UUID lookup returns 401 for service accounts)
-    list_data = ampcontrol_get(f"/charge_points/?search={charger_uuid}")
+    list_data = ampcontrol_get(f"/charge_points/?search={charger_uuid}", org)
     if list_data and list_data.get("data"):
         for charger in list_data["data"]:
             if charger.get("id", "").lower() == charger_uuid.lower():
@@ -625,31 +678,53 @@ def get_charger_status(charger_uuid: str) -> dict:
             return parse_charger(list_data["data"][0])
 
     # Fallback: list all and search
-    all_data = ampcontrol_get("/charge_points/")
+    all_data = ampcontrol_get("/charge_points/", org)
     if all_data:
         count = all_data.get("total", 0)
-        log.info(f"Service account sees {count} chargers total")
+        log.info(f"Org '{org.get('name')}' service account sees {count} chargers total")
         for charger in all_data.get("data", []):
             if charger.get("id", "").lower() == charger_uuid.lower():
                 return parse_charger(charger)
 
-    log.error(f"Charger {charger_uuid} not found in Ampcontrol")
+    log.info(f"Charger {charger_uuid} not found in org '{org.get('name')}'")
     return {"online": None, "name": "Unknown", "status": "unknown", "raw": {}}
 
 
-def get_charger_alerts(charger_uuid: str, network_id: str = "") -> list:
+def find_charger_status_across_orgs(charger_uuid: str) -> dict:
     """
-    Fetches unresolved alerts for a specific charger from Ampcontrol.
+    Tries get_charger_status() against every configured org in turn,
+    returning as soon as one of them has a definitive answer (online
+    True or False). If no org has heard of this charger, or all of
+    their API calls failed, returns the same 'unknown' shape as
+    get_charger_status() did previously, so existing callers/fallback
+    logic (manual troubleshooting flow) keep working unchanged.
+    """
+    if not AMPCONTROL_ORGS:
+        log.warning("No Ampcontrol organizations configured")
+        return {"online": None, "name": "Unknown", "status": "unknown", "raw": {}}
+
+    for org in AMPCONTROL_ORGS:
+        status = get_charger_status(charger_uuid, org)
+        if status.get("online") is not None:
+            return status
+
+    log.warning(f"Charger {charger_uuid} not found in any of {len(AMPCONTROL_ORGS)} configured org(s)")
+    return {"online": None, "name": "Unknown", "status": "unknown", "raw": {}}
+
+
+def get_charger_alerts(charger_uuid: str, network_id: str, org: dict) -> list:
+    """
+    Fetches unresolved alerts for a specific charger from Ampcontrol,
+    within a specific org.
     Endpoint: GET /v2/alerts/?network={uuid}&charger={uuid}
     'network' is a REQUIRED parameter on this endpoint (confirmed against
     the API docs) — without it Ampcontrol returns 422 Unprocessable
     Content. 'charger' further filters to just this charger.
 
-    Aeversa's organization spans multiple networks (one per site/customer),
-    so the correct network_id must come from the charger's own data
-    (charge-point objects include a 'networkId' field) — a single fixed
-    network can't be assumed. Falls back to AMPCONTROL_NETWORK_ID only if
-    no per-charger network_id is available, for defensiveness.
+    Aeversa spans multiple organizations, each with their own networks,
+    so both org (for credentials) and network_id (from the charger's own
+    data) must be correct together — a charger's network_id is only
+    meaningful within its own org.
 
     IMPORTANT: the 'active' field does NOT indicate whether an alert is
     still unresolved — confirmed against real data that a resolved alert
@@ -659,15 +734,18 @@ def get_charger_alerts(charger_uuid: str, network_id: str = "") -> list:
     specific "unresolved" value, since the full set of non-resolved status
     strings (Active/Open/New/etc.) isn't confirmed against real data.
     """
+    if not org:
+        log.warning(f"No org available for charger {charger_uuid} — skipping alert check")
+        return []
     resolved_network_id = network_id or AMPCONTROL_NETWORK_ID
     if not resolved_network_id:
         log.warning(f"No network_id available for charger {charger_uuid} — skipping alert check")
         return []
-    data = ampcontrol_get(f"/alerts/?network={resolved_network_id}&charger={charger_uuid}")
+    data = ampcontrol_get(f"/alerts/?network={resolved_network_id}&charger={charger_uuid}", org)
     if not data or not data.get("data"):
         return []
     unresolved_alerts = [a for a in data["data"] if a.get("status") != "Resolved"]
-    log.info(f"Charger {charger_uuid} (network {resolved_network_id}) → {len(unresolved_alerts)} unresolved alert(s) found")
+    log.info(f"Charger {charger_uuid} (org '{org.get('name')}', network {resolved_network_id}) → {len(unresolved_alerts)} unresolved alert(s) found")
     return unresolved_alerts
 
 
@@ -750,9 +828,10 @@ def is_invalid_id_tag_alert(alert: dict) -> bool:
     return alert.get("name") == "INVALID_ID_TAGS"
 
 
-def restart_charger(charger_uuid: str) -> bool:
+def restart_charger(charger_uuid: str, org: dict) -> bool:
     """
-    Sends a remote Soft Reset OCPP command to the charger via Ampcontrol.
+    Sends a remote Soft Reset OCPP command to the charger via Ampcontrol,
+    within a specific org.
     Returns True if the command was accepted.
     """
     import uuid as _uuid
@@ -764,13 +843,13 @@ def restart_charger(charger_uuid: str) -> bool:
         "operationType": "Reset",
         "protocol": "ocpp1.6"
     }
-    result = ampcontrol_post("/ocpp_messages/", payload)
+    result = ampcontrol_post("/ocpp_messages/", payload, org)
     success = result is not None and result.get("status") == "success"
-    log.info(f"{'✅' if success else '❌'} Remote restart for {charger_uuid}: {success}")
+    log.info(f"{'✅' if success else '❌'} Remote restart for {charger_uuid} (org '{org.get('name')}'): {success}")
     return success
 
 
-def poll_charger_and_notify_online(user_id: str, charger_uuid: str, charger_name: str,
+def poll_charger_and_notify_online(user_id: str, charger_uuid: str, charger_name: str, org: dict,
                                     next_step: str = "await_slow_restart_result",
                                     question: str = "Is the charging speed better now?",
                                     fault_type: str = "Slow charging",
@@ -791,7 +870,7 @@ def poll_charger_and_notify_online(user_id: str, charger_uuid: str, charger_name
     time.sleep(initial_delay_secs)
     elapsed = initial_delay_secs
     while elapsed < timeout_secs:
-        status = get_charger_status(charger_uuid)
+        status = get_charger_status(charger_uuid, org)
         if status.get("online") is True:
             log.info(f"✅ Charger {charger_name} back online after {elapsed}s — notifying {user_id}")
             send_whatsapp_message(
@@ -829,7 +908,7 @@ def poll_charger_and_notify_online(user_id: str, charger_uuid: str, charger_name
 
 
 def poll_emergency_stop_cleared(user_id: str, charger_uuid: str, network_id: str,
-                                 charger_name: str,
+                                 charger_name: str, org: dict,
                                  timeout_secs: int = 60, interval_secs: int = 10):
     """
     Runs in a background thread after the customer confirms they released
@@ -843,7 +922,7 @@ def poll_emergency_stop_cleared(user_id: str, charger_uuid: str, network_id: str
     while elapsed < timeout_secs:
         time.sleep(interval_secs)
         elapsed += interval_secs
-        alerts = get_charger_alerts(charger_uuid, network_id)
+        alerts = get_charger_alerts(charger_uuid, network_id, org)
         still_present = any(is_emergency_stop_alert(a) for a in alerts)
         if not still_present:
             log.info(f"✅ Emergency stop alert cleared for {charger_uuid} after {elapsed}s — notifying {user_id}")
@@ -904,18 +983,18 @@ def extract_uuid_from_text(text: str) -> str | None:
     return uuid_match.group(0) if uuid_match else None
 
 
-def search_charger_by_name(name: str) -> dict | None:
+def search_charger_by_name(name: str, org: dict) -> dict | None:
     """
-    Searches Ampcontrol for a charger by name/custom name/ocppId.
-    Ampcontrol's search endpoint matches broadly across account/site
-    metadata, not just the charger's own name — so a generic term (e.g.
-    the company name) can return unrelated chargers. We only accept a
-    result if the search term genuinely appears in THAT charger's own
-    customName, name, or ocppId; otherwise we treat it as not found
-    rather than guessing.
+    Searches Ampcontrol for a charger by name/custom name/ocppId, within
+    a specific org. Ampcontrol's search endpoint matches broadly across
+    account/site metadata, not just the charger's own name — so a
+    generic term (e.g. the company name) can return unrelated chargers.
+    We only accept a result if the search term genuinely appears in THAT
+    charger's own customName, name, or ocppId; otherwise we treat it as
+    not found rather than guessing.
     """
-    log.info(f"Searching Ampcontrol for charger by name: {name}")
-    data = ampcontrol_get(f"/charge_points/?search={name}")
+    log.info(f"Searching org '{org.get('name')}' for charger by name: {name}")
+    data = ampcontrol_get(f"/charge_points/?search={name}", org)
     if not data or not data.get("data"):
         return None
 
@@ -930,12 +1009,31 @@ def search_charger_by_name(name: str) -> dict | None:
             charger.get("ocppId", ""),
         ]
         if any(needle in c.lower() for c in candidates if c):
+            charger["_matched_org_index"] = org["index"]
+            charger["_matched_org_name"] = org.get("name", "")
             return charger
 
     log.warning(
-        f"Ampcontrol search for '{name}' returned {len(data['data'])} result(s) "
-        f"but none matched by charger name/ID — treating as not found"
+        f"Ampcontrol search for '{name}' in org '{org.get('name')}' returned "
+        f"{len(data['data'])} result(s) but none matched by charger name/ID — treating as not found"
     )
+    return None
+
+
+def search_charger_by_name_across_orgs(name: str) -> dict | None:
+    """
+    Tries search_charger_by_name() against every configured org in turn,
+    returning as soon as one of them finds a genuine match. The returned
+    charger dict carries _matched_org_index/_matched_org_name so the
+    caller knows which org's credentials to keep using for this charger.
+    """
+    if not AMPCONTROL_ORGS:
+        log.warning("No Ampcontrol organizations configured")
+        return None
+    for org in AMPCONTROL_ORGS:
+        charger = search_charger_by_name(name, org)
+        if charger:
+            return charger
     return None
 
 
@@ -1561,12 +1659,13 @@ def handle_qr_or_image(user_id: str, state: dict,
 
         # Search Ampcontrol by the text read from sticker
         log.info(f"OCR read '{sticker_text}' — searching Ampcontrol by name")
-        charger = search_charger_by_name(sticker_text)
+        charger = search_charger_by_name_across_orgs(sticker_text)
         if charger:
             charger_uuid = charger.get("id", "")
             charger_name = charger.get("customName") or charger.get("name") or sticker_text
+            matched_org = get_org_by_index(charger.get("_matched_org_index"))
             log.info(f"✅ Found charger '{charger_name}' via OCR name search")
-            return lookup_charger_and_respond(user_id, state, charger_uuid)
+            return lookup_charger_and_respond(user_id, state, charger_uuid, matched_org)
 
         # OCR read text but charger not found in Ampcontrol
         user_states[user_id] = {**state, "step": "await_charger_id"}
@@ -1591,12 +1690,22 @@ def handle_qr_or_image(user_id: str, state: dict,
 
 
 def lookup_charger_and_respond(user_id: str, state: dict,
-                                charger_uuid: str) -> tuple[str, str | None]:
+                                charger_uuid: str, org: dict = None) -> tuple[str, str | None]:
     """
     Looks up charger status on Ampcontrol and routes accordingly.
+    If org is not provided (e.g. charger_uuid came from a QR code or a
+    pasted UUID, rather than a name search that already matched a
+    specific org), searches across every configured org to find which
+    one has this charger.
     """
     log.info(f"Looking up charger {charger_uuid} on Ampcontrol")
-    charger = get_charger_status(charger_uuid)
+    if org:
+        charger = get_charger_status(charger_uuid, org)
+    else:
+        charger = find_charger_status_across_orgs(charger_uuid)
+
+    matched_org_index = charger.get("org_index")
+    matched_org = get_org_by_index(matched_org_index) if matched_org_index else org
 
     # Build a friendly charger name
     raw_name = charger.get("name", "")
@@ -1614,11 +1723,12 @@ def lookup_charger_and_respond(user_id: str, state: dict,
         "charger_id":    charger_uuid,   # also store as charger_id for escalation
         "charger_name":  friendly_name,
         "network_id":    charger.get("network_id", ""),
+        "org_index":     matched_org_index,
         "site":          state.get("site") or charger.get("network_name", ""),
     }
 
     if charger["online"] is True:
-        active_alerts = get_charger_alerts(charger_uuid, base_state.get("network_id", ""))
+        active_alerts = get_charger_alerts(charger_uuid, base_state.get("network_id", ""), matched_org) if matched_org else []
         if active_alerts:
             alert_summary = format_alerts_for_agent(active_alerts)
             if any(is_emergency_stop_alert(a) for a in active_alerts):
@@ -1819,11 +1929,12 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             # Only try the Ampcontrol name search if this doesn't read as a
             # question — no point searching "where do i find X" as a charger name
             if not is_confused:
-                charger = search_charger_by_name(msg_raw.strip())
+                charger = search_charger_by_name_across_orgs(msg_raw.strip())
                 if charger:
                     charger_uuid = charger.get("id", "")
+                    matched_org = get_org_by_index(charger.get("_matched_org_index"))
                     log.info(f"Found charger by typed name at start: {charger.get('customName') or charger.get('name')}")
-                    return lookup_charger_and_respond(user_id, state, charger_uuid)
+                    return lookup_charger_and_respond(user_id, state, charger_uuid, matched_org)
 
             # Not found in Ampcontrol, or looked like a question — check the KB
             ai_result = ask_claude(msg_raw, context_hint=(
@@ -1884,11 +1995,12 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             # Only try the Ampcontrol name search if this doesn't read as a
             # question — no point searching "where do i find X" as a charger name
             if not is_confused:
-                charger = search_charger_by_name(msg_raw.strip())
+                charger = search_charger_by_name_across_orgs(msg_raw.strip())
                 if charger:
                     charger_uuid = charger.get("id", "")
+                    matched_org = get_org_by_index(charger.get("_matched_org_index"))
                     log.info(f"Found charger by typed name: {charger.get('customName') or charger.get('name')}")
-                    return lookup_charger_and_respond(user_id, state, charger_uuid)
+                    return lookup_charger_and_respond(user_id, state, charger_uuid, matched_org)
 
             # Not found in Ampcontrol, or looked like a question — check intent
             ai_result = ask_claude(msg_raw, context_hint=(
@@ -2001,11 +2113,12 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         if len(msg_raw.strip()) >= 3 and not is_greeting:
             # Only try the Ampcontrol name search if this doesn't read as a question
             if not is_confused:
-                charger = search_charger_by_name(msg_raw.strip())
+                charger = search_charger_by_name_across_orgs(msg_raw.strip())
                 if charger:
                     charger_uuid = charger.get("id", "")
+                    matched_org = get_org_by_index(charger.get("_matched_org_index"))
                     log.info(f"Found charger by name: {charger.get('customName') or charger.get('name')}")
-                    return lookup_charger_and_respond(user_id, state, charger_uuid)
+                    return lookup_charger_and_respond(user_id, state, charger_uuid, matched_org)
 
             # Not found in Ampcontrol, or looked like a question — check the KB
             ai_result = ask_claude(msg_raw, context_hint=(
@@ -2100,7 +2213,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
         if msg == "1":
             # Vehicle not charging — check for active alerts before trying a restart
-            active_alerts = get_charger_alerts(charger_uuid, state.get("network_id", ""))
+            active_alerts = get_charger_alerts(charger_uuid, state.get("network_id", ""), get_org_by_index(state.get("org_index")))
             if active_alerts:
                 alert_summary = format_alerts_for_agent(active_alerts)
                 if any(is_emergency_stop_alert(a) for a in active_alerts):
@@ -2171,7 +2284,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
             if intent in ["not_charging", "charger_fault", "charger_off"] \
                     and looks_like_fault_description(msg_raw):
-                active_alerts = get_charger_alerts(charger_uuid, state.get("network_id", ""))
+                active_alerts = get_charger_alerts(charger_uuid, state.get("network_id", ""), get_org_by_index(state.get("org_index")))
                 if active_alerts:
                     alert_summary = format_alerts_for_agent(active_alerts)
                     if any(is_emergency_stop_alert(a) for a in active_alerts):
@@ -2260,19 +2373,23 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         if "👍" in msg_raw or any(contains_phrase(msg, p) for p in confirm_phrases):
             charger_uuid = state.get("charger_uuid", "")
             charger_name = state.get("charger_name", "your charger")
+            org = get_org_by_index(state.get("org_index"))
             user_states[user_id] = {**state, "step": "opt1_restarting"}
-            threading.Thread(
-                target=lambda: restart_charger(charger_uuid), daemon=True
-            ).start()
-            threading.Thread(
-                target=lambda: poll_charger_and_notify_online(
-                    user_id, charger_uuid, charger_name,
-                    next_step="await_restart_result",
-                    question="Is your vehicle charging?",
-                    fault_type="Vehicle not charging"
-                ),
-                daemon=True
-            ).start()
+            if org:
+                threading.Thread(
+                    target=lambda: restart_charger(charger_uuid, org), daemon=True
+                ).start()
+                threading.Thread(
+                    target=lambda: poll_charger_and_notify_online(
+                        user_id, charger_uuid, charger_name, org,
+                        next_step="await_restart_result",
+                        question="Is your vehicle charging?",
+                        fault_type="Vehicle not charging"
+                    ),
+                    daemon=True
+                ).start()
+            else:
+                log.warning(f"No org on record for charger {charger_uuid} — cannot restart")
             return (
                 f"Thank you! I'm restarting *{charger_name}* now — please hold on "
                 "for a moment while I check that it's back online. ⏳"
@@ -2297,13 +2414,17 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             charger_uuid = state.get("charger_uuid", "")
             network_id = state.get("network_id", "")
             charger_name = state.get("charger_name", "your charger")
+            org = get_org_by_index(state.get("org_index"))
             user_states[user_id] = {**state, "step": "emergency_stop_verifying"}
-            threading.Thread(
-                target=lambda: poll_emergency_stop_cleared(
-                    user_id, charger_uuid, network_id, charger_name
-                ),
-                daemon=True
-            ).start()
+            if org:
+                threading.Thread(
+                    target=lambda: poll_emergency_stop_cleared(
+                        user_id, charger_uuid, network_id, charger_name, org
+                    ),
+                    daemon=True
+                ).start()
+            else:
+                log.warning(f"No org on record for charger {charger_uuid} — cannot verify emergency stop")
             return "Thanks! Let me just confirm that on our system... ⏳"
         def no_fn():
             return start_escalation(user_id, state,
@@ -2382,14 +2503,18 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             charger_uuid = state.get("charger_uuid", "")
             charger_name = state.get("charger_name", "your charger")
             network_id = state.get("network_id", "")
+            org = get_org_by_index(state.get("org_index"))
             user_states[user_id] = {**state, "step": "opt2_slow_restarting"}
-            threading.Thread(
-                target=lambda: restart_charger(charger_uuid), daemon=True
-            ).start()
-            threading.Thread(
-                target=lambda: poll_charger_and_notify_online(user_id, charger_uuid, charger_name),
-                daemon=True
-            ).start()
+            if org:
+                threading.Thread(
+                    target=lambda: restart_charger(charger_uuid, org), daemon=True
+                ).start()
+                threading.Thread(
+                    target=lambda: poll_charger_and_notify_online(user_id, charger_uuid, charger_name, org),
+                    daemon=True
+                ).start()
+            else:
+                log.warning(f"No org on record for charger {charger_uuid} — cannot restart")
             return (
                 f"Thank you! I'm restarting *{charger_name}* now — please hold on "
                 "for a moment while I check that it's back online. ⏳"
@@ -2470,17 +2595,18 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         def no_fn():
             charger_uuid = state.get("charger_uuid", "")
             charger_name = state.get("charger_name", "your charger")
+            org = get_org_by_index(state.get("org_index"))
             # If this was a stuck-cable/stop-session issue, a remote restart
             # is genuinely worth trying before escalating — the same thing
             # an agent would do.
-            if state.get("media_topic") == "video_how_to_stop" and charger_uuid:
+            if state.get("media_topic") == "video_how_to_stop" and charger_uuid and org:
                 user_states[user_id] = {**state, "step": "something_else_restarting"}
                 threading.Thread(
-                    target=lambda: restart_charger(charger_uuid), daemon=True
+                    target=lambda: restart_charger(charger_uuid, org), daemon=True
                 ).start()
                 threading.Thread(
                     target=lambda: poll_charger_and_notify_online(
-                        user_id, charger_uuid, charger_name,
+                        user_id, charger_uuid, charger_name, org,
                         next_step="something_else_after_restart_result",
                         question="Is the cable free and is your issue resolved now?",
                         fault_type="Other issue — restart attempted",
@@ -2985,10 +3111,11 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     return lookup_charger_and_respond(user_id, state, charger_uuid)
             sticker_text = read_text_from_image(received_media)
             if sticker_text:
-                charger = search_charger_by_name(sticker_text)
+                charger = search_charger_by_name_across_orgs(sticker_text)
                 if charger:
                     charger_uuid = charger.get("id", "")
-                    return lookup_charger_and_respond(user_id, state, charger_uuid)
+                    matched_org = get_org_by_index(charger.get("_matched_org_index"))
+                    return lookup_charger_and_respond(user_id, state, charger_uuid, matched_org)
             # Couldn't read it — fall back to asking for the site as text
             return (
                 "📷 I received your photo but couldn't identify the "
@@ -3055,13 +3182,15 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             sticker_text = read_text_from_image(received_media)
             if sticker_text:
                 # Search Ampcontrol by sticker text
-                charger = search_charger_by_name(sticker_text)
+                charger = search_charger_by_name_across_orgs(sticker_text)
                 if charger:
                     charger_id = charger.get("id", sticker_text)
                     charger_name = charger.get("customName") or charger.get("name") or sticker_text
+                    matched_org_index = charger.get("_matched_org_index")
                     user_states[user_id] = {**state, "step": "start",
                                              "charger_id": charger_id,
-                                             "charger_name": charger_name}
+                                             "charger_name": charger_name,
+                                             "org_index": matched_org_index}
                     return (
                         f"✅ *I found your charger from the sticker!*\n\n"
                         f"🔌 *Charger:* {charger_name}\n\n"
