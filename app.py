@@ -1339,15 +1339,20 @@ def smart_yes_no(user_id: str, state: dict, msg: str,
     """
     Handles any free-text YES/NO response intelligently.
     yes_response / no_response can be strings or callables.
+
+    IMPORTANT: yes_response/no_response are only invoked lazily, inside
+    the branch that actually needs them. They frequently have side
+    effects (setting state, triggering escalations, sending WhatsApp
+    notifications) — calling both unconditionally on every invocation,
+    regardless of the interpreted result, would fire those side effects
+    even when the customer's answer was neither a yes nor a no.
     """
     result = interpret_response(msg, question)
-    yes_val = yes_response() if callable(yes_response) else yes_response
-    no_val  = no_response()  if callable(no_response)  else no_response
 
     if result == "yes":
-        return yes_val
+        return yes_response() if callable(yes_response) else yes_response
     elif result == "no":
-        return no_val
+        return no_response() if callable(no_response) else no_response
     elif result == "new_issue":
         user_states[user_id] = {**state, "step": "confirm_restart"}
         return (
