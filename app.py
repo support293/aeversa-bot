@@ -738,6 +738,16 @@ def is_emergency_stop_alert(alert: dict) -> bool:
     return contains_phrase(description, "258")
 
 
+def is_invalid_id_tag_alert(alert: dict) -> bool:
+    """
+    Detects the specific alert for a vehicle ID tag that's invalid,
+    expired, or not registered to charge — confirmed against real data
+    as name == "INVALID_ID_TAGS" (e.g. description: "Id tag for
+    <020000000000> is either invalid, expired or blocked.").
+    """
+    return alert.get("name") == "INVALID_ID_TAGS"
+
+
 def restart_charger(charger_uuid: str) -> bool:
     """
     Sends a remote Soft Reset OCPP command to the charger via Ampcontrol.
@@ -1612,6 +1622,20 @@ def lookup_charger_and_respond(user_id: str, state: dict,
                     "Reply *YES* once you've released it, or *NO* if you can't find one.",
                     get_media("video_emergency_stop")
                 )
+            if any(is_invalid_id_tag_alert(a) for a in active_alerts):
+                escalate_state = {**base_state, "fault_type": "Invalid vehicle ID tag",
+                                   "extra_notes": alert_summary}
+                return (
+                    start_escalation(
+                        user_id, escalate_state,
+                        f"I can see that you are at charger, *{friendly_name}*. Your "
+                        "*Vehicle ID Tag* doesn't seem to be registered to charge on "
+                        "this system. 🪪\n\n"
+                        "I'm putting you in touch with our support team who can help "
+                        "get this sorted."
+                    ),
+                    None
+                )
             escalate_state = {**base_state, "fault_type": "Active charger alert",
                                "extra_notes": alert_summary}
             return (
@@ -2070,6 +2094,15 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                         "Reply *YES* once you've released it, or *NO* if you can't find one.",
                         get_media("video_emergency_stop")
                     )
+                if any(is_invalid_id_tag_alert(a) for a in active_alerts):
+                    return start_escalation(
+                        user_id,
+                        {**state, "fault_type": "Invalid vehicle ID tag", "extra_notes": alert_summary},
+                        "Your *Vehicle ID Tag* doesn't seem to be registered to charge "
+                        "on this system. 🪪\n\n"
+                        "I'm putting you in touch with our support team who can help "
+                        "get this sorted."
+                    )
                 return start_escalation(
                     user_id,
                     {**state, "fault_type": "Vehicle not charging", "extra_notes": alert_summary},
@@ -2131,6 +2164,15 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                             "release it? 🎥 See the video below for how.\n\n"
                             "Reply *YES* once you've released it, or *NO* if you can't find one.",
                             get_media("video_emergency_stop")
+                        )
+                    if any(is_invalid_id_tag_alert(a) for a in active_alerts):
+                        return start_escalation(
+                            user_id,
+                            {**state, "fault_type": "Invalid vehicle ID tag", "extra_notes": alert_summary},
+                            "Your *Vehicle ID Tag* doesn't seem to be registered to "
+                            "charge on this system. 🪪\n\n"
+                            "I'm putting you in touch with our support team who can "
+                            "help get this sorted."
                         )
                     return start_escalation(
                         user_id,
