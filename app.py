@@ -111,6 +111,7 @@ MEDIA = {
     # ── Videos ────────────────────────────────────────────────────────────────
     "video_how_to_start":   f"{MEDIA_BASE}/how-to-start-session.mp4",
     "video_how_to_stop":    f"{MEDIA_BASE}/how-to-stop-session.mp4.mp4",
+    "video_emergency_stop": f"{MEDIA_BASE}/emergency-stop-release.mp4.mp4",
 }
 
 # Set to False until media files are uploaded to GitHub
@@ -1552,9 +1553,10 @@ def lookup_charger_and_respond(user_id: str, state: dict,
                     "online — but it looks like the *emergency stop* button may have "
                     "been pressed on this charger. 🛑\n\n"
                     "Could you please check the charger for a red emergency stop "
-                    "button, and if it's pressed in, twist or pull it to release it?\n\n"
+                    "button, and if it's pressed in, twist or pull it to release it? "
+                    "🎥 See the video below for how.\n\n"
                     "Reply *YES* once you've released it, or *NO* if you can't find one.",
-                    None
+                    get_media("video_emergency_stop")
                 )
             escalate_state = {**base_state, "fault_type": "Active charger alert",
                                "extra_notes": alert_summary}
@@ -2009,8 +2011,10 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                         "It looks like the *emergency stop* button may have been "
                         "pressed on this charger. 🛑\n\n"
                         "Could you please check the charger for a red emergency stop "
-                        "button, and if it's pressed in, twist or pull it to release it?\n\n"
-                        "Reply *YES* once you've released it, or *NO* if you can't find one."
+                        "button, and if it's pressed in, twist or pull it to release it? "
+                        "🎥 See the video below for how.\n\n"
+                        "Reply *YES* once you've released it, or *NO* if you can't find one.",
+                        get_media("video_emergency_stop")
                     )
                 return start_escalation(
                     user_id,
@@ -2070,8 +2074,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                             "pressed on this charger. 🛑\n\n"
                             "Could you please check the charger for a red emergency "
                             "stop button, and if it's pressed in, twist or pull it to "
-                            "release it?\n\n"
-                            "Reply *YES* once you've released it, or *NO* if you can't find one."
+                            "release it? 🎥 See the video below for how.\n\n"
+                            "Reply *YES* once you've released it, or *NO* if you can't find one.",
+                            get_media("video_emergency_stop")
                         )
                     return start_escalation(
                         user_id,
