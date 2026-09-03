@@ -811,6 +811,60 @@ def poll_charger_and_notify_online(user_id: str, charger_uuid: str, charger_name
     user_states[user_id] = {**current, "step": "start"}
 
 
+def poll_emergency_stop_cleared(user_id: str, charger_uuid: str, network_id: str,
+                                 charger_name: str,
+                                 timeout_secs: int = 60, interval_secs: int = 10):
+    """
+    Runs in a background thread after the customer confirms they released
+    the emergency stop button. Polls Ampcontrol to confirm the emergency-
+    stop alert (OCPP error 258) has actually cleared, rather than trusting
+    the customer's self-report alone — mirrors the same real-status-check
+    pattern used for the restart flows. If it doesn't clear within
+    timeout_secs, escalates to an agent automatically.
+    """
+    elapsed = 0
+    while elapsed < timeout_secs:
+        time.sleep(interval_secs)
+        elapsed += interval_secs
+        alerts = get_charger_alerts(charger_uuid, network_id)
+        still_present = any(is_emergency_stop_alert(a) for a in alerts)
+        if not still_present:
+            log.info(f"✅ Emergency stop alert cleared for {charger_uuid} after {elapsed}s — notifying {user_id}")
+            send_whatsapp_message(
+                user_id,
+                "✅ Confirmed — the emergency stop alert has cleared!\n\n"
+                "Since it was pressed, you'll need to *unplug your vehicle and "
+                "plug it back in* to start a new charging session.\n\n"
+                "Is it charging now?\n\nReply *YES* or *NO*"
+            )
+            current = user_states.get(user_id, {})
+            user_states[user_id] = {**current, "step": "emergency_stop_replug_result"}
+            return
+
+    # Timed out — alert still showing as unresolved
+    log.warning(f"⚠️ Emergency stop alert still present for {charger_uuid} after {timeout_secs}s")
+    current = user_states.get(user_id, {})
+    timeout_fault = "Emergency stop — alert did not clear after customer release"
+    send_whatsapp_message(
+        user_id,
+        "⏳ I'm still seeing that alert flagged on our system.\n\n"
+        "Let me connect you with our support team so they can look into it directly."
+    )
+    notify_agents(user_id, {
+        **current,
+        "fault_type": timeout_fault,
+        "extra_notes": current.get("extra_notes", "")
+    })
+    send_escalation_email(
+        customer_number=user_id.replace("whatsapp:", ""),
+        fault_type=timeout_fault,
+        site=current.get("site"),
+        charger_id=current.get("charger_id") or current.get("charger_uuid"),
+        extra_notes=current.get("extra_notes", ""),
+    )
+    user_states[user_id] = {**current, "step": "start"}
+
+
 def extract_uuid_from_text(text: str) -> str | None:
     """
     Extracts a charger UUID from text.
@@ -2196,13 +2250,17 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
     if step == "emergency_stop_check":
         QUESTION = "Have you released the emergency stop button?"
         def yes_fn():
-            user_states[user_id] = {**state, "step": "emergency_stop_replug_result"}
-            return (
-                "Great, thanks for letting me know! 😊\n\n"
-                "Since the emergency stop was pressed, you'll need to *unplug your "
-                "vehicle and plug it back in* to start a new charging session.\n\n"
-                "Is it charging now?\n\nReply *YES* or *NO*"
-            )
+            charger_uuid = state.get("charger_uuid", "")
+            network_id = state.get("network_id", "")
+            charger_name = state.get("charger_name", "your charger")
+            user_states[user_id] = {**state, "step": "emergency_stop_verifying"}
+            threading.Thread(
+                target=lambda: poll_emergency_stop_cleared(
+                    user_id, charger_uuid, network_id, charger_name
+                ),
+                daemon=True
+            ).start()
+            return "Thanks! Let me just confirm that on our system... ⏳"
         def no_fn():
             return start_escalation(user_id, state,
                 "No problem, let me connect you with a support agent who can help "
@@ -2213,6 +2271,13 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return no_fn()
         else:
             return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
+
+    # ── Emergency stop — verifying the alert actually cleared (polling) ──────
+    if step == "emergency_stop_verifying":
+        return (
+            "⏳ Still checking on the charger's status — I'll message you shortly. "
+            "Thanks for your patience!"
+        )
 
     # ── After releasing emergency stop — confirm charging actually resumed ────
     if step == "emergency_stop_replug_result":
