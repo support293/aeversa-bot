@@ -2242,7 +2242,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
     # ── Vehicle not charging — waiting for customer to confirm unplugged ─────
     if step == "opt1_confirm_unplugged":
-        confirm_phrases = ["done", "unplugged", "yes", "ok", "okay", "finished", "ready"]
+        confirm_phrases = ["done", "unplugged", "out", "removed", "yes", "ok", "okay", "finished", "ready"]
         if "👍" in msg_raw or any(contains_phrase(msg, p) for p in confirm_phrases):
             charger_uuid = state.get("charger_uuid", "")
             charger_name = state.get("charger_name", "your charger")
@@ -2362,7 +2362,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
 
     # ── Slow charging — waiting for customer to confirm session stopped ──────
     if step == "opt2_slow_confirm_stopped":
-        confirm_phrases = ["done", "stopped", "unplugged", "yes", "ok",
+        confirm_phrases = ["done", "stopped", "unplugged", "out", "removed", "yes", "ok",
                             "okay", "finished", "stop", "ready"]
         if "👍" in msg_raw or any(contains_phrase(msg, p) for p in confirm_phrases):
             charger_uuid = state.get("charger_uuid", "")
