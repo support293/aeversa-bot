@@ -601,14 +601,16 @@ def get_charger_status(charger_uuid: str) -> dict:
                          charger.get("ocppId") or
                          f"Charger ...{charger_uuid[-6:]}")
         is_online = online_status == "ONLINE"
-        network_id = charger.get("networkId", "")
-        log.info(f"Charger '{name}' → onlineStatus={online_status} ocppStatus={ocpp_status} networkId={network_id}")
+        network_id   = charger.get("networkId", "")
+        network_name = charger.get("networkName", "")
+        log.info(f"Charger '{name}' → onlineStatus={online_status} ocppStatus={ocpp_status} networkId={network_id} networkName={network_name}")
         return {
             "online": is_online,
             "name":   name,
             "status": online_status,
             "ocpp":   ocpp_status,
-            "network_id": network_id,
+            "network_id":   network_id,
+            "network_name": network_name,
             "raw":    charger
         }
 
@@ -1607,6 +1609,7 @@ def lookup_charger_and_respond(user_id: str, state: dict,
         "charger_id":    charger_uuid,   # also store as charger_id for escalation
         "charger_name":  friendly_name,
         "network_id":    charger.get("network_id", ""),
+        "site":          state.get("site") or charger.get("network_name", ""),
     }
 
     if charger["online"] is True:
