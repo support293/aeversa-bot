@@ -1704,11 +1704,20 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
     state = user_states[user_id]
 
     # ── Global Commands — these work from ANY step ────────────────────────────
-    GREETING_WORDS = {"menu", "start", "hi", "hello", "hey", "hiya", "howzit",
-                      "yo", "sup", "good morning", "good afternoon", "good evening",
-                      "good day", "morning", "afternoon"}
+    # "menu"/"start" are explicit, unambiguous reset commands — they always
+    # restart immediately, with no confirmation step. Softer greetings like
+    # "hi" are ambiguous (could just be a casual check-in mid-flow), so
+    # those still go through the confirm_restart prompt.
+    EXPLICIT_RESET_WORDS = {"menu", "start"}
+    SOFT_GREETING_WORDS = {"hi", "hello", "hey", "hiya", "howzit",
+                            "yo", "sup", "good morning", "good afternoon", "good evening",
+                            "good day", "morning", "afternoon"}
 
-    if msg in GREETING_WORDS:
+    if msg in EXPLICIT_RESET_WORDS:
+        user_states[user_id] = {"step": "await_qr", "last_activity": now}
+        return (GREETING, get_media("charger_id_northgate"))
+
+    if msg in SOFT_GREETING_WORDS:
         if step in ["await_qr", "await_charger_id"]:
             # Already greeted — just remind them what to send
             return (
