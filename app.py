@@ -712,10 +712,20 @@ def find_charger_status_across_orgs(charger_uuid: str) -> dict:
     return {"online": None, "name": "Unknown", "status": "unknown", "raw": {}}
 
 
+# Alert names that are cosmetic/non-blocking — confirmed by the customer
+# these don't stop the charger from operating and don't show up as real
+# faults on the Ampcontrol dashboard's "Unresolved Alerts" widget. Excluded
+# entirely from get_charger_alerts() so they never trigger an escalation.
+IGNORABLE_ALERT_NAMES = {
+    "METER_VALUE_LIMIT_VIOLATION",
+    "VENDOR_ERROR_CODE",
+}
+
+
 def get_charger_alerts(charger_uuid: str, network_id: str, org: dict) -> list:
     """
-    Fetches unresolved alerts for a specific charger from Ampcontrol,
-    within a specific org.
+    Fetches unresolved, non-ignorable alerts for a specific charger from
+    Ampcontrol, within a specific org.
     Endpoint: GET /v2/alerts/?network={uuid}&charger={uuid}
     'network' is a REQUIRED parameter on this endpoint (confirmed against
     the API docs) — without it Ampcontrol returns 422 Unprocessable
@@ -733,6 +743,9 @@ def get_charger_alerts(charger_uuid: str, network_id: str, org: dict) -> list:
     exclude the confirmed value "Resolved" rather than whitelisting a
     specific "unresolved" value, since the full set of non-resolved status
     strings (Active/Open/New/etc.) isn't confirmed against real data.
+
+    Also excludes alert names in IGNORABLE_ALERT_NAMES — cosmetic alert
+    types that don't actually affect charger operation.
     """
     if not org:
         log.warning(f"No org available for charger {charger_uuid} — skipping alert check")
@@ -744,7 +757,10 @@ def get_charger_alerts(charger_uuid: str, network_id: str, org: dict) -> list:
     data = ampcontrol_get(f"/alerts/?network={resolved_network_id}&charger={charger_uuid}", org)
     if not data or not data.get("data"):
         return []
-    unresolved_alerts = [a for a in data["data"] if a.get("status") != "Resolved"]
+    unresolved_alerts = [
+        a for a in data["data"]
+        if a.get("status") != "Resolved" and a.get("name") not in IGNORABLE_ALERT_NAMES
+    ]
     log.info(f"Charger {charger_uuid} (org '{org.get('name')}', network {resolved_network_id}) → {len(unresolved_alerts)} unresolved alert(s) found")
     return unresolved_alerts
 
