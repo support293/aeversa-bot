@@ -109,6 +109,7 @@ MID_FLOW_STEPS = {
     "opt1_error_check", "opt1_try_another_charger", "opt1_other_charger_working",
     "opt1_confirm_unplugged",
     "opt2_power_on_site", "opt2_another_charger", "opt2_other_charger_works",
+    "opt2_which_connector",
     "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_wifi",
     "opt3_wattspot_replug", "opt3_other_4g", "opt3_other_final_restart",
     "await_restart_result",
@@ -1353,6 +1354,58 @@ def contains_phrase(text: str, phrase: str) -> bool:
     return _re.search(pattern, text) is not None
 
 
+def parse_connector_choice(msg_raw: str) -> int | None:
+    """
+    Parses a customer's free-text answer about which connector they're
+    charging on, into a connector number (1 or 2). Convention:
+    Connector 1 = A = the one on the right
+    Connector 2 = B = the one on the left
+
+    Bare letter answers (a/b) are only matched when the WHOLE message is
+    just that letter (or a tight "connector a"-style phrase) — "a" alone
+    is far too common an English word to safely word-boundary-match
+    anywhere inside a longer sentence (e.g. "I am at a charger").
+    Numbers, number-words, and left/right are safe to match anywhere in
+    the message, since they're much less likely to appear as incidental
+    filler in a direct answer to this specific question.
+    """
+    msg = msg_raw.strip().lower().strip(" .!?")
+
+    # Bare/near-bare letter answers — strict match only, to avoid "a"/"b"
+    # false-matching inside an unrelated sentence
+    if msg in ("a", "connector a", "plug a", "charger a"):
+        return 1
+    if msg in ("b", "connector b", "plug b", "charger b"):
+        return 2
+
+    # "left one"/"right one" — here "one" is a pronoun ("the [side]
+    # connector"), not the number 1. Must be resolved before the
+    # individual-word check below, or a bare "one" signal would wrongly
+    # override a preceding "left".
+    if contains_phrase(msg, "left one") or contains_phrase(msg, "left connector") or contains_phrase(msg, "left side"):
+        return 2
+    if contains_phrase(msg, "right one") or contains_phrase(msg, "right connector") or contains_phrase(msg, "right side"):
+        return 1
+
+    connector_1_words = ["1", "one", "right"]
+    connector_2_words = ["2", "two", "left"]
+    is_1 = any(contains_phrase(msg, w) for w in connector_1_words)
+    is_2 = any(contains_phrase(msg, w) for w in connector_2_words)
+
+    if is_1 and not is_2:
+        return 1
+    if is_2 and not is_1:
+        return 2
+    return None  # ambiguous, both matched, or neither matched
+
+
+CONNECTOR_QUESTION = (
+    "🔌 Which connector are you charging on?\n\n"
+    "Reply with the number (*1* or *2*), the letter (*A* or *B*), "
+    "or which side it's on (*left* or *right*)."
+)
+
+
 def extract_error_code(text: str) -> str | None:
     """Extracts a numeric error code from text like '76', 'error 76', 'error code 76'."""
     import re
@@ -1677,7 +1730,7 @@ def start_escalation(user_id: str, state: dict, context_msg: str = "") -> str:
     )
 
 
-def escalate_slow_charging(user_id: str, state: dict, description: str = "") -> str:
+def escalate_slow_charging(user_id: str, state: dict, description: str = "", connector_number: int = None) -> str:
     """
     For slow-charging reports: pulls the charger's live meter reading and
     escalates immediately with it attached, rather than attempting a
@@ -1685,14 +1738,29 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "") -> 
     'normal vs slow' thresholds are defined, every slow-charging report
     goes straight to a human with the actual Amp/kW numbers attached, so
     an agent can judge it rather than the bot guessing.
+
+    If connector_number is given (from asking the customer which
+    connector they're on), filters the meter readings down to just that
+    connector — a charger can have multiple connectors charging
+    different vehicles simultaneously, so showing every connector's data
+    would be ambiguous for the agent. Falls back to showing all
+    connectors if the specified one isn't found in the readings, rather
+    than showing nothing.
     """
     charger_uuid = state.get("charger_uuid", "")
     network_id = state.get("network_id", "")
     org = get_org_by_index(state.get("org_index"))
     meter_readings = get_charger_meter_values(charger_uuid, network_id, org) if org else None
-    meter_note = format_meter_values_for_agent(meter_readings)
 
-    notes_parts = [n for n in [description, meter_note] if n]
+    if meter_readings and connector_number is not None:
+        filtered = [r for r in meter_readings if r.get("connector_id") == connector_number]
+        if filtered:
+            meter_readings = filtered
+
+    meter_note = format_meter_values_for_agent(meter_readings)
+    connector_note = f"Customer reports charging on Connector {connector_number}." if connector_number is not None else ""
+
+    notes_parts = [n for n in [description, connector_note, meter_note] if n]
     combined_notes = "\n".join(notes_parts)
 
     escalate_state = {**state, "fault_type": "Slow charging"}
@@ -2514,7 +2582,9 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     "Once it's unplugged, just send me a 👍 or let me know."
                 )
             elif intent == "slow_charging":
-                return escalate_slow_charging(user_id, state, msg_raw.strip())
+                user_states[user_id] = {**state, "step": "opt2_which_connector",
+                                         "slow_charging_description": msg_raw.strip()}
+                return f"🐢 Sorry to hear that!\n\n{CONNECTOR_QUESTION}"
             elif intent == "agent":
                 return start_escalation(user_id, state)
             elif intent == "general":
@@ -2668,7 +2738,24 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
     # ── Slow charging — capturing the customer's description ─────────────────
     if step == "opt2_awaiting_description":
         description = msg_raw.strip()
-        return escalate_slow_charging(user_id, state, description)
+        user_states[user_id] = {**state, "step": "opt2_which_connector",
+                                 "slow_charging_description": description}
+        return f"Thanks for letting me know! 📋\n\n{CONNECTOR_QUESTION}"
+
+    # ── Slow charging — waiting for customer to say which connector ──────────
+    if step == "opt2_which_connector":
+        connector_number = parse_connector_choice(msg_raw)
+        description = state.get("slow_charging_description", "")
+        if connector_number is not None:
+            return escalate_slow_charging(user_id, state, description, connector_number=connector_number)
+        retries = state.get("connector_retries", 0) + 1
+        if retries >= 2:
+            # Give up asking — proceed without a specific connector filter
+            # rather than leaving the customer stuck
+            user_states[user_id] = {**state, "connector_retries": 0}
+            return escalate_slow_charging(user_id, state, description)
+        user_states[user_id] = {**state, "step": "opt2_which_connector", "connector_retries": retries}
+        return f"Sorry, I didn't quite catch that! 😊\n\n{CONNECTOR_QUESTION}"
 
     # ── Something else ────────────────────────────────────────────────────────
     if step == "something_else":
