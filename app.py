@@ -778,9 +778,16 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> d
     what counts as a meaningfully low reading depends on the vehicle and
     charge stage and isn't something to guess at here.
 
+    Tracks the most recent value for each measurand independently, rather
+    than requiring Current.Import and Power.Active.Import to appear in
+    the exact same timestamped batch — some meterValues submissions can
+    report a subset of measurands (e.g. a SoC-only update), which would
+    otherwise cause the most recent overall batch to be missing the
+    values we actually want even though a slightly older one has them.
+
     Returns {"current_a": float|None, "power_kw": float|None,
-    "timestamp": str|None} for the most recent reading found, or None if
-    no meter data is available at all.
+    "current_timestamp": str|None, "power_timestamp": str|None}, or None
+    if no meter data is available at all.
     """
     if not org:
         log.warning(f"No org available for charger {charger_uuid} — skipping meter value check")
@@ -794,48 +801,57 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> d
     if not data or not data.get("data"):
         return None
 
-    # Find the reading with the latest timestamp — don't assume the API
-    # returns them in any particular order, since that isn't confirmed.
-    latest_timestamp = None
-    latest_sampled_values = None
+    current_a = None
+    power_kw = None
+    current_timestamp = None
+    power_timestamp = None
+
     for record in data["data"]:
         for mv in record.get("meterValues", []):
             ts = mv.get("timestamp")
-            if ts and (latest_timestamp is None or ts > latest_timestamp):
-                latest_timestamp = ts
-                latest_sampled_values = mv.get("sampledValue", [])
+            if not ts:
+                continue
+            for sample in mv.get("sampledValue", []):
+                measurand = sample.get("measurand", "")
+                value = sample.get("value")
+                if value is None:
+                    continue
+                if measurand == "Current.Import" and (current_timestamp is None or ts > current_timestamp):
+                    try:
+                        current_a = float(value)
+                        current_timestamp = ts
+                    except (TypeError, ValueError):
+                        pass
+                elif measurand == "Power.Active.Import" and (power_timestamp is None or ts > power_timestamp):
+                    try:
+                        power_kw = float(value)
+                        power_timestamp = ts
+                    except (TypeError, ValueError):
+                        pass
 
-    if not latest_sampled_values:
+    if current_a is None and power_kw is None:
         return None
 
-    current_a = None
-    power_kw = None
-    for sample in latest_sampled_values:
-        measurand = sample.get("measurand", "")
-        value = sample.get("value")
-        if measurand == "Current.Import" and value is not None:
-            try:
-                current_a = float(value)
-            except (TypeError, ValueError):
-                pass
-        elif measurand == "Power.Active.Import" and value is not None:
-            try:
-                power_kw = float(value)
-            except (TypeError, ValueError):
-                pass
-
-    log.info(f"Charger {charger_uuid} (org '{org.get('name')}') → latest meter reading at {latest_timestamp}: {current_a}A, {power_kw}kW")
-    return {"current_a": current_a, "power_kw": power_kw, "timestamp": latest_timestamp}
+    log.info(
+        f"Charger {charger_uuid} (org '{org.get('name')}') → "
+        f"current: {current_a}A @ {current_timestamp}, power: {power_kw}kW @ {power_timestamp}"
+    )
+    return {
+        "current_a": current_a, "power_kw": power_kw,
+        "current_timestamp": current_timestamp, "power_timestamp": power_timestamp,
+    }
 
 
 def format_meter_values_for_agent(meter_data: dict | None) -> str:
     """Formats a meter-value reading into a plain-text note for escalation."""
     if not meter_data or (meter_data.get("current_a") is None and meter_data.get("power_kw") is None):
         return ""
-    current_str = f"{meter_data['current_a']}A" if meter_data.get("current_a") is not None else "unknown A"
-    power_str = f"{meter_data['power_kw']}kW" if meter_data.get("power_kw") is not None else "unknown kW"
-    ts = meter_data.get("timestamp", "")
-    return f"Latest meter reading: {current_str}, {power_str} (as of {ts})"
+    parts = []
+    if meter_data.get("current_a") is not None:
+        parts.append(f"{meter_data['current_a']}A (as of {meter_data.get('current_timestamp', 'unknown time')})")
+    if meter_data.get("power_kw") is not None:
+        parts.append(f"{meter_data['power_kw']}kW (as of {meter_data.get('power_timestamp', 'unknown time')})")
+    return "Latest meter reading: " + ", ".join(parts)
 
 
 def format_alerts_for_agent(alerts: list) -> str:
