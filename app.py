@@ -109,10 +109,9 @@ MID_FLOW_STEPS = {
     "opt1_error_check", "opt1_try_another_charger", "opt1_other_charger_working",
     "opt1_confirm_unplugged",
     "opt2_power_on_site", "opt2_another_charger", "opt2_other_charger_works",
-    "opt2_slow_confirm_stopped",
     "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_wifi",
     "opt3_wattspot_replug", "opt3_other_4g", "opt3_other_final_restart",
-    "await_restart_result", "await_slow_restart_result",
+    "await_restart_result",
     "emergency_stop_check", "emergency_stop_replug_result",
     "issue_menu", "manual_issue_menu",
     "pre_escalate_site", "pre_escalate_charger_id",
@@ -129,7 +128,7 @@ YES_NO_STEPS = [
     "opt2_power_on_site", "opt2_another_charger", "opt2_other_charger_works",
     "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_after_wait",
     "opt3_wattspot_replug", "opt3_other_final_restart",
-    "await_restart_result", "await_slow_restart_result",
+    "await_restart_result",
     "emergency_stop_check", "emergency_stop_replug_result",
 ]
 
@@ -829,6 +828,16 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> d
     return {"current_a": current_a, "power_kw": power_kw, "timestamp": latest_timestamp}
 
 
+def format_meter_values_for_agent(meter_data: dict | None) -> str:
+    """Formats a meter-value reading into a plain-text note for escalation."""
+    if not meter_data or (meter_data.get("current_a") is None and meter_data.get("power_kw") is None):
+        return ""
+    current_str = f"{meter_data['current_a']}A" if meter_data.get("current_a") is not None else "unknown A"
+    power_str = f"{meter_data['power_kw']}kW" if meter_data.get("power_kw") is not None else "unknown kW"
+    ts = meter_data.get("timestamp", "")
+    return f"Latest meter reading: {current_str}, {power_str} (as of {ts})"
+
+
 def format_alerts_for_agent(alerts: list) -> str:
     """
     Formats Ampcontrol alerts into a plain-text summary for escalation
@@ -930,9 +939,9 @@ def restart_charger(charger_uuid: str, org: dict) -> bool:
 
 
 def poll_charger_and_notify_online(user_id: str, charger_uuid: str, charger_name: str, org: dict,
-                                    next_step: str = "await_slow_restart_result",
-                                    question: str = "Is the charging speed better now?",
-                                    fault_type: str = "Slow charging",
+                                    next_step: str = "await_restart_result",
+                                    question: str = "Is your vehicle charging?",
+                                    fault_type: str = "Vehicle not charging",
                                     action_line: str = "Please plug your vehicle back in now.",
                                     initial_delay_secs: int = 30,
                                     timeout_secs: int = 120, interval_secs: int = 10):
@@ -1593,6 +1602,34 @@ def start_escalation(user_id: str, state: dict, context_msg: str = "") -> str:
         "📍 The sticker is on the *front of the charger, underneath the screen.*\n\n"
         "Please type it below."
     )
+
+
+def escalate_slow_charging(user_id: str, state: dict, description: str = "") -> str:
+    """
+    For slow-charging reports: pulls the charger's live meter reading and
+    escalates immediately with it attached, rather than attempting a
+    remote restart first. This is deliberate for now — until real-world
+    'normal vs slow' thresholds are defined, every slow-charging report
+    goes straight to a human with the actual Amp/kW numbers attached, so
+    an agent can judge it rather than the bot guessing.
+    """
+    charger_uuid = state.get("charger_uuid", "")
+    network_id = state.get("network_id", "")
+    org = get_org_by_index(state.get("org_index"))
+    meter_data = get_charger_meter_values(charger_uuid, network_id, org) if org else None
+    meter_note = format_meter_values_for_agent(meter_data)
+
+    notes_parts = [n for n in [description, meter_note] if n]
+    combined_notes = "\n".join(notes_parts)
+
+    escalate_state = {**state, "fault_type": "Slow charging"}
+    if combined_notes:
+        escalate_state["extra_notes"] = combined_notes
+
+    return start_escalation(user_id, escalate_state,
+        "Thanks for letting me know! 🐢 I'm checking your charger's live "
+        "data now — let me connect you with our support team who can "
+        "review this properly.")
 
 def sales_redirect_message() -> str:
     name = SALES_INFO.get("name", "our sales team")
@@ -2404,14 +2441,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                     "Once it's unplugged, just send me a 👍 or let me know."
                 )
             elif intent == "slow_charging":
-                user_states[user_id] = {**state, "step": "opt2_slow_confirm_stopped",
-                                         "fault_type": "Slow charging"}
-                return (
-                    "🐢 Let's get your speed up!\n\n"
-                    "Could you please *stop the current charging session* and then "
-                    "*unplug the cable*? Once you've done both, just send me a 👍 "
-                    "or let me know you're done."
-                )
+                return escalate_slow_charging(user_id, state, msg_raw.strip())
             elif intent == "agent":
                 return start_escalation(user_id, state)
             elif intent == "general":
@@ -2565,83 +2595,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
     # ── Slow charging — capturing the customer's description ─────────────────
     if step == "opt2_awaiting_description":
         description = msg_raw.strip()
-        user_states[user_id] = {**state, "step": "opt2_slow_confirm_stopped",
-                                 "extra_notes": description}
-        return (
-            "Thanks for letting me know! 📋\n\n"
-            "🐢 Let's get your speed up!\n\n"
-            "Could you please *stop the current charging session* and then "
-            "*unplug the cable*? Once you've done both, just send me a 👍 "
-            "or let me know you're done."
-        )
-
-    # ── Slow charging — waiting for customer to confirm session stopped ──────
-    if step == "opt2_slow_confirm_stopped":
-        confirm_phrases = ["done", "stopped", "unplugged", "out", "removed", "yes", "ok",
-                            "okay", "finished", "stop", "ready"]
-        if "👍" in msg_raw or any(contains_phrase(msg, p) for p in confirm_phrases):
-            charger_uuid = state.get("charger_uuid", "")
-            charger_name = state.get("charger_name", "your charger")
-            network_id = state.get("network_id", "")
-            org = get_org_by_index(state.get("org_index"))
-            user_states[user_id] = {**state, "step": "opt2_slow_restarting"}
-            if org:
-                threading.Thread(
-                    target=lambda: restart_charger(charger_uuid, org), daemon=True
-                ).start()
-                threading.Thread(
-                    target=lambda: poll_charger_and_notify_online(user_id, charger_uuid, charger_name, org),
-                    daemon=True
-                ).start()
-            else:
-                log.warning(f"No org on record for charger {charger_uuid} — cannot restart")
-            return (
-                f"Thank you! I'm restarting *{charger_name}* now — please hold on "
-                "for a moment while I check that it's back online. ⏳"
-            )
-        else:
-            return (
-                "Just let me know once you've *stopped the session and unplugged the "
-                "cable* — you can reply with a 👍, or just tell me when you're done."
-            )
-
-    # ── Slow charging — restart in progress, bot is polling in the background ──
-    if step == "opt2_slow_restarting":
-        return (
-            "⏳ Still checking on the charger's status — I'll message you as soon as it's "
-            "back online and ready to plug back in. Thanks for your patience!"
-        )
-
-    # ── After remote restart — slow charging ──────────────────────────────────
-    if step == "await_slow_restart_result":
-        charger_name = state.get("charger_name", "your charger")
-        QUESTION = "Is the charging speed better now?"
-        def yes_fn():
-            user_states[user_id] = {"step": "start"}
-            return GREAT_NEWS
-        def no_fn():
-            charger_uuid = state.get("charger_uuid", "")
-            network_id = state.get("network_id", "")
-            org = get_org_by_index(state.get("org_index"))
-            meter_data = get_charger_meter_values(charger_uuid, network_id, org) if org else None
-            meter_note = ""
-            if meter_data and (meter_data.get("current_a") is not None or meter_data.get("power_kw") is not None):
-                current_str = f"{meter_data['current_a']}A" if meter_data.get("current_a") is not None else "unknown A"
-                power_str = f"{meter_data['power_kw']}kW" if meter_data.get("power_kw") is not None else "unknown kW"
-                ts = meter_data.get("timestamp", "")
-                meter_note = f"Latest meter reading: {current_str}, {power_str} (as of {ts})"
-            existing_notes = state.get("extra_notes", "")
-            combined_notes = "\n".join(n for n in [existing_notes, meter_note] if n)
-            escalate_state = {**state, "extra_notes": combined_notes} if combined_notes else state
-            return start_escalation(user_id, escalate_state,
-                "I'm sorry the restart didn't improve the speed. 😔\n\n"
-                "Our support team will investigate further.")
-        if msg == "yes":
-            return yes_fn()
-        elif msg == "no":
-            return no_fn()
-        else:
-            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
+        return escalate_slow_charging(user_id, state, description)
 
     # ── Something else ────────────────────────────────────────────────────────
     if step == "something_else":
