@@ -764,6 +764,36 @@ def get_charger_alerts(charger_uuid: str, network_id: str, org: dict) -> list:
     return unresolved_alerts
 
 
+def get_connector_numbers(charger_uuid: str, network_id: str, org: dict) -> dict:
+    """
+    Fetches the friendly connector numbers (1, 2, ...) for every
+    connector on a charger, keyed by connector UUID.
+    Endpoint: GET /v2/connectors/?network={uuid}&chargepoint={uuid}
+    Confirmed via docs: the response's 'connectorId' field is the
+    integer "Connector 1+" label matching the Ampcontrol dashboard
+    directly (1-indexed, no offset needed) — separate from the
+    connector's own 'id' (its UUID).
+    Returns {connector_uuid: connector_number}. Returns an empty dict on
+    any failure, so callers can gracefully fall back to showing the raw
+    UUID rather than breaking.
+    """
+    if not org:
+        return {}
+    resolved_network_id = network_id or AMPCONTROL_NETWORK_ID
+    if not resolved_network_id:
+        return {}
+    data = ampcontrol_get(f"/connectors/?network={resolved_network_id}&chargepoint={charger_uuid}", org)
+    if not data or not data.get("data"):
+        return {}
+    mapping = {}
+    for connector in data["data"]:
+        connector_uuid = connector.get("id")
+        connector_number = connector.get("connectorId")
+        if connector_uuid is not None and connector_number is not None:
+            mapping[connector_uuid] = connector_number
+    return mapping
+
+
 def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> list | None:
     """
     Fetches the most recent meter reading for EACH connector on a
@@ -792,12 +822,11 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
     real readings that arrived slightly earlier.
 
     Returns a list of dicts — one per connector with any data —
-    [{"connector_id": str, "current_a": float|None, "power_kw": float|None,
+    [{"connector_id": int|str, "current_a": float|None, "power_kw": float|None,
       "current_timestamp": str|None, "power_timestamp": str|None}, ...],
-    or None if no meter data is available at all. NOTE: connector_id here
-    is Ampcontrol's raw connector UUID, not the "Connector 1"/"Connector 2"
-    label shown on the dashboard — that friendly mapping isn't confirmed
-    against any endpoint yet.
+    or None if no meter data is available at all. connector_id is the
+    friendly dashboard number (e.g. 1, 2) via get_connector_numbers()
+    where available, falling back to the raw connector UUID otherwise.
     """
     if not org:
         log.warning(f"No org available for charger {charger_uuid} — skipping meter value check")
@@ -845,6 +874,15 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
     readings = [r for r in by_connector.values() if r["current_a"] is not None or r["power_kw"] is not None]
     if not readings:
         return None
+
+    # Swap raw connector UUIDs for the friendly dashboard number (e.g. "1",
+    # "2") where we can — falls back to the raw UUID for any connector
+    # not found in the mapping, rather than dropping the reading.
+    connector_number_map = get_connector_numbers(charger_uuid, network_id, org)
+    for r in readings:
+        friendly_number = connector_number_map.get(r["connector_id"])
+        if friendly_number is not None:
+            r["connector_id"] = friendly_number
 
     log.info(
         f"Charger {charger_uuid} (org '{org.get('name')}') → meter readings for "
