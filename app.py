@@ -764,30 +764,40 @@ def get_charger_alerts(charger_uuid: str, network_id: str, org: dict) -> list:
     return unresolved_alerts
 
 
-def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> dict | None:
+def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> list | None:
     """
-    Fetches the most recent meter reading for a charger — specifically
-    the Current.Import (Amps) and Power.Active.Import (kW) measurands —
-    for attaching as diagnostic context on slow-charging escalations.
+    Fetches the most recent meter reading for EACH connector on a
+    charger — specifically Current.Import (Amps) and Power.Active.Import
+    (kW) — for attaching as diagnostic context on slow-charging
+    escalations.
     Endpoint: GET /v2/meter_values/?network={uuid}&charger={uuid}
     At least one of network/charger/vehicle/evse/connector is required;
     network+charger together satisfies that, same pattern as alerts.
 
-    Deliberately does NOT judge whether the reading counts as "slow" —
+    Deliberately does NOT judge whether any reading counts as "slow" —
     just surfaces the real numbers for a human agent to interpret, since
     what counts as a meaningfully low reading depends on the vehicle and
     charge stage and isn't something to guess at here.
 
-    Tracks the most recent value for each measurand independently, rather
-    than requiring Current.Import and Power.Active.Import to appear in
-    the exact same timestamped batch — some meterValues submissions can
-    report a subset of measurands (e.g. a SoC-only update), which would
-    otherwise cause the most recent overall batch to be missing the
-    values we actually want even though a slightly older one has them.
+    IMPORTANT: a charger can have multiple connectors charging
+    simultaneously (confirmed against real data — a 2-connector DC
+    charger both actively charging different vehicles). Each top-level
+    record from this endpoint is already scoped to one connectorId, so
+    readings are kept separate per connector rather than blended into
+    one "latest overall" value, which could otherwise silently reflect
+    the wrong connector's numbers. Within each connector, tracks the
+    most recent value for each measurand independently, since some
+    meterValues submissions report only a subset of measurands (e.g. a
+    SoC-only update) and requiring an exact shared timestamp would miss
+    real readings that arrived slightly earlier.
 
-    Returns {"current_a": float|None, "power_kw": float|None,
-    "current_timestamp": str|None, "power_timestamp": str|None}, or None
-    if no meter data is available at all.
+    Returns a list of dicts — one per connector with any data —
+    [{"connector_id": str, "current_a": float|None, "power_kw": float|None,
+      "current_timestamp": str|None, "power_timestamp": str|None}, ...],
+    or None if no meter data is available at all. NOTE: connector_id here
+    is Ampcontrol's raw connector UUID, not the "Connector 1"/"Connector 2"
+    label shown on the dashboard — that friendly mapping isn't confirmed
+    against any endpoint yet.
     """
     if not org:
         log.warning(f"No org available for charger {charger_uuid} — skipping meter value check")
@@ -801,12 +811,15 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> d
     if not data or not data.get("data"):
         return None
 
-    current_a = None
-    power_kw = None
-    current_timestamp = None
-    power_timestamp = None
+    by_connector = {}  # connector_id -> reading dict
 
     for record in data["data"]:
+        connector_id = record.get("connectorId") or "unknown"
+        entry = by_connector.setdefault(connector_id, {
+            "connector_id": connector_id,
+            "current_a": None, "power_kw": None,
+            "current_timestamp": None, "power_timestamp": None,
+        })
         for mv in record.get("meterValues", []):
             ts = mv.get("timestamp")
             if not ts:
@@ -816,42 +829,48 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> d
                 value = sample.get("value")
                 if value is None:
                     continue
-                if measurand == "Current.Import" and (current_timestamp is None or ts > current_timestamp):
+                if measurand == "Current.Import" and (entry["current_timestamp"] is None or ts > entry["current_timestamp"]):
                     try:
-                        current_a = float(value)
-                        current_timestamp = ts
+                        entry["current_a"] = float(value)
+                        entry["current_timestamp"] = ts
                     except (TypeError, ValueError):
                         pass
-                elif measurand == "Power.Active.Import" and (power_timestamp is None or ts > power_timestamp):
+                elif measurand == "Power.Active.Import" and (entry["power_timestamp"] is None or ts > entry["power_timestamp"]):
                     try:
-                        power_kw = float(value)
-                        power_timestamp = ts
+                        entry["power_kw"] = float(value)
+                        entry["power_timestamp"] = ts
                     except (TypeError, ValueError):
                         pass
 
-    if current_a is None and power_kw is None:
+    readings = [r for r in by_connector.values() if r["current_a"] is not None or r["power_kw"] is not None]
+    if not readings:
         return None
 
     log.info(
-        f"Charger {charger_uuid} (org '{org.get('name')}') → "
-        f"current: {current_a}A @ {current_timestamp}, power: {power_kw}kW @ {power_timestamp}"
+        f"Charger {charger_uuid} (org '{org.get('name')}') → meter readings for "
+        f"{len(readings)} connector(s): " +
+        "; ".join(f"{r['connector_id']}: {r['current_a']}A/{r['power_kw']}kW" for r in readings)
     )
-    return {
-        "current_a": current_a, "power_kw": power_kw,
-        "current_timestamp": current_timestamp, "power_timestamp": power_timestamp,
-    }
+    return readings
 
 
-def format_meter_values_for_agent(meter_data: dict | None) -> str:
-    """Formats a meter-value reading into a plain-text note for escalation."""
-    if not meter_data or (meter_data.get("current_a") is None and meter_data.get("power_kw") is None):
+def format_meter_values_for_agent(readings: list | None) -> str:
+    """Formats per-connector meter readings into a plain-text note for escalation."""
+    if not readings:
         return ""
-    parts = []
-    if meter_data.get("current_a") is not None:
-        parts.append(f"{meter_data['current_a']}A (as of {meter_data.get('current_timestamp', 'unknown time')})")
-    if meter_data.get("power_kw") is not None:
-        parts.append(f"{meter_data['power_kw']}kW (as of {meter_data.get('power_timestamp', 'unknown time')})")
-    return "Latest meter reading: " + ", ".join(parts)
+    lines = []
+    for r in readings:
+        parts = []
+        if r.get("current_a") is not None:
+            parts.append(f"{r['current_a']}A (as of {r.get('current_timestamp', 'unknown time')})")
+        if r.get("power_kw") is not None:
+            parts.append(f"{r['power_kw']}kW (as of {r.get('power_timestamp', 'unknown time')})")
+        if parts:
+            lines.append(f"Connector {r.get('connector_id', 'unknown')}: " + ", ".join(parts))
+    if not lines:
+        return ""
+    label = "Latest meter reading:" if len(lines) == 1 else "Latest meter readings (multiple connectors):"
+    return label + "\n" + "\n".join(lines)
 
 
 def format_alerts_for_agent(alerts: list) -> str:
@@ -1632,8 +1651,8 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "") -> 
     charger_uuid = state.get("charger_uuid", "")
     network_id = state.get("network_id", "")
     org = get_org_by_index(state.get("org_index"))
-    meter_data = get_charger_meter_values(charger_uuid, network_id, org) if org else None
-    meter_note = format_meter_values_for_agent(meter_data)
+    meter_readings = get_charger_meter_values(charger_uuid, network_id, org) if org else None
+    meter_note = format_meter_values_for_agent(meter_readings)
 
     notes_parts = [n for n in [description, meter_note] if n]
     combined_notes = "\n".join(notes_parts)
