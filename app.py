@@ -765,6 +765,70 @@ def get_charger_alerts(charger_uuid: str, network_id: str, org: dict) -> list:
     return unresolved_alerts
 
 
+def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> dict | None:
+    """
+    Fetches the most recent meter reading for a charger — specifically
+    the Current.Import (Amps) and Power.Active.Import (kW) measurands —
+    for attaching as diagnostic context on slow-charging escalations.
+    Endpoint: GET /v2/meter_values/?network={uuid}&charger={uuid}
+    At least one of network/charger/vehicle/evse/connector is required;
+    network+charger together satisfies that, same pattern as alerts.
+
+    Deliberately does NOT judge whether the reading counts as "slow" —
+    just surfaces the real numbers for a human agent to interpret, since
+    what counts as a meaningfully low reading depends on the vehicle and
+    charge stage and isn't something to guess at here.
+
+    Returns {"current_a": float|None, "power_kw": float|None,
+    "timestamp": str|None} for the most recent reading found, or None if
+    no meter data is available at all.
+    """
+    if not org:
+        log.warning(f"No org available for charger {charger_uuid} — skipping meter value check")
+        return None
+    resolved_network_id = network_id or AMPCONTROL_NETWORK_ID
+    if not resolved_network_id:
+        log.warning(f"No network_id available for charger {charger_uuid} — skipping meter value check")
+        return None
+
+    data = ampcontrol_get(f"/meter_values/?network={resolved_network_id}&charger={charger_uuid}", org)
+    if not data or not data.get("data"):
+        return None
+
+    # Find the reading with the latest timestamp — don't assume the API
+    # returns them in any particular order, since that isn't confirmed.
+    latest_timestamp = None
+    latest_sampled_values = None
+    for record in data["data"]:
+        for mv in record.get("meterValues", []):
+            ts = mv.get("timestamp")
+            if ts and (latest_timestamp is None or ts > latest_timestamp):
+                latest_timestamp = ts
+                latest_sampled_values = mv.get("sampledValue", [])
+
+    if not latest_sampled_values:
+        return None
+
+    current_a = None
+    power_kw = None
+    for sample in latest_sampled_values:
+        measurand = sample.get("measurand", "")
+        value = sample.get("value")
+        if measurand == "Current.Import" and value is not None:
+            try:
+                current_a = float(value)
+            except (TypeError, ValueError):
+                pass
+        elif measurand == "Power.Active.Import" and value is not None:
+            try:
+                power_kw = float(value)
+            except (TypeError, ValueError):
+                pass
+
+    log.info(f"Charger {charger_uuid} (org '{org.get('name')}') → latest meter reading at {latest_timestamp}: {current_a}A, {power_kw}kW")
+    return {"current_a": current_a, "power_kw": power_kw, "timestamp": latest_timestamp}
+
+
 def format_alerts_for_agent(alerts: list) -> str:
     """
     Formats Ampcontrol alerts into a plain-text summary for escalation
@@ -2556,7 +2620,20 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             user_states[user_id] = {"step": "start"}
             return GREAT_NEWS
         def no_fn():
-            return start_escalation(user_id, state,
+            charger_uuid = state.get("charger_uuid", "")
+            network_id = state.get("network_id", "")
+            org = get_org_by_index(state.get("org_index"))
+            meter_data = get_charger_meter_values(charger_uuid, network_id, org) if org else None
+            meter_note = ""
+            if meter_data and (meter_data.get("current_a") is not None or meter_data.get("power_kw") is not None):
+                current_str = f"{meter_data['current_a']}A" if meter_data.get("current_a") is not None else "unknown A"
+                power_str = f"{meter_data['power_kw']}kW" if meter_data.get("power_kw") is not None else "unknown kW"
+                ts = meter_data.get("timestamp", "")
+                meter_note = f"Latest meter reading: {current_str}, {power_str} (as of {ts})"
+            existing_notes = state.get("extra_notes", "")
+            combined_notes = "\n".join(n for n in [existing_notes, meter_note] if n)
+            escalate_state = {**state, "extra_notes": combined_notes} if combined_notes else state
+            return start_escalation(user_id, escalate_state,
                 "I'm sorry the restart didn't improve the speed. 😔\n\n"
                 "Our support team will investigate further.")
         if msg == "yes":
