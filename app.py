@@ -828,6 +828,13 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
     or None if no meter data is available at all. connector_id is the
     friendly dashboard number (e.g. 1, 2) via get_connector_numbers()
     where available, falling back to the raw connector UUID otherwise.
+
+    Power is normalized to kW by reading each sample's own 'unit' field
+    rather than assuming — OCPP 1.6's default unit for Power.Active.Import
+    is Watts unless explicitly overridden, so a raw value is converted
+    (÷1000) when unit == "W". Confirmed against a real reading that was
+    off by 1000x before this fix (20914.1 displayed as "kW" was actually
+    20914.1 W = 20.9 kW).
     """
     if not org:
         log.warning(f"No org available for charger {charger_uuid} — skipping meter value check")
@@ -861,13 +868,29 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
                     continue
                 if measurand == "Current.Import" and (entry["current_timestamp"] is None or ts > entry["current_timestamp"]):
                     try:
-                        entry["current_a"] = float(value)
+                        raw_value = float(value)
+                        unit = sample.get("unit", "A")
+                        if unit not in ("A", ""):
+                            log.warning(f"Unexpected unit '{unit}' for Current.Import on charger {charger_uuid} — using raw value as-is")
+                        entry["current_a"] = raw_value
                         entry["current_timestamp"] = ts
                     except (TypeError, ValueError):
                         pass
                 elif measurand == "Power.Active.Import" and (entry["power_timestamp"] is None or ts > entry["power_timestamp"]):
                     try:
-                        entry["power_kw"] = float(value)
+                        raw_value = float(value)
+                        unit = sample.get("unit", "W")
+                        # OCPP 1.6's default unit for Power.Active.Import is
+                        # Watts unless explicitly overridden — don't assume
+                        # kW just because that's what we display.
+                        if unit == "W":
+                            power_kw_value = raw_value / 1000.0
+                        elif unit in ("kW", ""):
+                            power_kw_value = raw_value
+                        else:
+                            log.warning(f"Unexpected unit '{unit}' for Power.Active.Import on charger {charger_uuid} — using raw value as kW without conversion")
+                            power_kw_value = raw_value
+                        entry["power_kw"] = power_kw_value
                         entry["power_timestamp"] = ts
                     except (TypeError, ValueError):
                         pass
