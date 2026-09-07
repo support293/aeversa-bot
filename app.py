@@ -1978,6 +1978,11 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
             "network_id": state.get("network_id"),
             "org_index": state.get("org_index"),
             "site": state.get("site"),
+            "fault_type": state.get("fault_type", "Slow charging"),
+            "extra_notes": (
+                f"Bot's live-data check showed {power_kw}kW{soc_note}, which appeared "
+                "normal — customer indicated continued concern despite this."
+            ),
         }
         return (
             f"I checked your charger's live data — it's currently delivering "
