@@ -1399,8 +1399,8 @@ def parse_connector_choice(msg_raw: str) -> int | None:
     """
     Parses a customer's free-text answer about which connector they're
     charging on, into a connector number (1 or 2). Convention:
-    Connector 1 = A = the one on the right
-    Connector 2 = B = the one on the left
+    Connector 1 = A = the one on the left
+    Connector 2 = B = the one on the right
 
     Bare letter answers (a/b) are only matched when the WHOLE message is
     just that letter (or a tight "connector a"-style phrase) — "a" alone
@@ -1422,14 +1422,14 @@ def parse_connector_choice(msg_raw: str) -> int | None:
     # "left one"/"right one" — here "one" is a pronoun ("the [side]
     # connector"), not the number 1. Must be resolved before the
     # individual-word check below, or a bare "one" signal would wrongly
-    # override a preceding "left".
+    # override a preceding "left"/"right".
     if contains_phrase(msg, "left one") or contains_phrase(msg, "left connector") or contains_phrase(msg, "left side"):
-        return 2
-    if contains_phrase(msg, "right one") or contains_phrase(msg, "right connector") or contains_phrase(msg, "right side"):
         return 1
+    if contains_phrase(msg, "right one") or contains_phrase(msg, "right connector") or contains_phrase(msg, "right side"):
+        return 2
 
-    connector_1_words = ["1", "one", "right"]
-    connector_2_words = ["2", "two", "left"]
+    connector_1_words = ["1", "one", "left"]
+    connector_2_words = ["2", "two", "right"]
     is_1 = any(contains_phrase(msg, w) for w in connector_1_words)
     is_2 = any(contains_phrase(msg, w) for w in connector_2_words)
 
