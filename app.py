@@ -1873,11 +1873,23 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
         )
 
     if slow_verdict is False:
-        # Looks normal — reassure the customer, don't escalate
+        # Looks normal — reassure the customer, don't escalate. Keep the
+        # charger identification in state (just reset the step) since we
+        # explicitly invite them to say AGENT next — if we wiped it here,
+        # that follow-up would have to re-ask for site/Charger ID even
+        # though we already know both.
         power_kw = primary_reading.get("power_kw")
         soc = primary_reading.get("soc_percent")
         soc_note = f" (battery at {soc}%)" if soc is not None else ""
-        user_states[user_id] = {"step": "start"}
+        user_states[user_id] = {
+            "step": "start",
+            "charger_uuid": state.get("charger_uuid"),
+            "charger_id": state.get("charger_id"),
+            "charger_name": state.get("charger_name"),
+            "network_id": state.get("network_id"),
+            "org_index": state.get("org_index"),
+            "site": state.get("site"),
+        }
         return (
             f"I checked your charger's live data — it's currently delivering "
             f"*{power_kw}kW*{soc_note}, which looks normal. 😊\n\n"
