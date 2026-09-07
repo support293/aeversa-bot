@@ -810,9 +810,13 @@ def get_connector_details(charger_uuid: str, network_id: str, org: dict) -> dict
 def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> list | None:
     """
     Fetches the most recent meter reading for EACH connector on a
-    charger — Current.Import (Amps), Power.Active.Import (kW), and SoC
-    (%) — for attaching as diagnostic context on slow-charging
-    escalations, and for judging whether a session is running slow.
+    charger — Current.Import (Amps), Current.Offered (Amps),
+    Power.Active.Import (kW), and SoC (%) — for attaching as diagnostic
+    context on slow-charging escalations, and for judging whether a
+    session is running slow. Current.Offered is what the charger is
+    making available to the vehicle; Current.Import is what the vehicle
+    is actually drawing — comparing the two tells us whether a slow
+    session is the vehicle's own limitation or the charger's.
     Endpoint: GET /v2/meter_values/?network={uuid}&charger={uuid}
     At least one of network/charger/vehicle/evse/connector is required;
     network+charger together satisfies that, same pattern as alerts.
@@ -831,9 +835,10 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
 
     Returns a list of dicts — one per connector with any data —
     [{"connector_id": int|str, "current_a": float|None, "power_kw": float|None,
-      "soc_percent": float|None, "max_capacity_kw": float|None,
-      "current_timestamp": str|None, "power_timestamp": str|None,
-      "soc_timestamp": str|None}, ...],
+      "soc_percent": float|None, "current_offered_a": float|None,
+      "max_capacity_kw": float|None, "current_timestamp": str|None,
+      "power_timestamp": str|None, "soc_timestamp": str|None,
+      "current_offered_timestamp": str|None}, ...],
     or None if no meter data is available at all. connector_id is the
     friendly dashboard number (e.g. 1, 2) via get_connector_details()
     where available, falling back to the raw connector UUID otherwise.
@@ -863,8 +868,10 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
         connector_id = record.get("connectorId") or "unknown"
         entry = by_connector.setdefault(connector_id, {
             "connector_id": connector_id,
-            "current_a": None, "power_kw": None, "soc_percent": None, "max_capacity_kw": None,
+            "current_a": None, "power_kw": None, "soc_percent": None,
+            "current_offered_a": None, "max_capacity_kw": None,
             "current_timestamp": None, "power_timestamp": None, "soc_timestamp": None,
+            "current_offered_timestamp": None,
         })
         for mv in record.get("meterValues", []):
             ts = mv.get("timestamp")
@@ -909,6 +916,16 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
                         entry["soc_timestamp"] = ts
                     except (TypeError, ValueError):
                         pass
+                elif measurand == "Current.Offered" and (entry["current_offered_timestamp"] is None or ts > entry["current_offered_timestamp"]):
+                    try:
+                        raw_value = float(value)
+                        unit = sample.get("unit", "A")
+                        if unit not in ("A", ""):
+                            log.warning(f"Unexpected unit '{unit}' for Current.Offered on charger {charger_uuid} — using raw value as-is")
+                        entry["current_offered_a"] = raw_value
+                        entry["current_offered_timestamp"] = ts
+                    except (TypeError, ValueError):
+                        pass
 
     readings = [r for r in by_connector.values() if r["current_a"] is not None or r["power_kw"] is not None]
     if not readings:
@@ -929,7 +946,8 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
     log.info(
         f"Charger {charger_uuid} (org '{org.get('name')}') → meter readings for "
         f"{len(readings)} connector(s): " +
-        "; ".join(f"{r['connector_id']}: {r['current_a']}A/{r['power_kw']}kW/{r['soc_percent']}% (max {r['max_capacity_kw']}kW)" for r in readings)
+        "; ".join(f"{r['connector_id']}: {r['current_a']}A/{r['power_kw']}kW/{r['soc_percent']}% "
+                  f"(offered {r['current_offered_a']}A, max {r['max_capacity_kw']}kW)" for r in readings)
     )
     return readings
 
@@ -1775,18 +1793,32 @@ def start_escalation(user_id: str, state: dict, context_msg: str = "") -> str:
 # Wattspot sites: real-world usable charging ceiling is ~20kW regardless of
 # what the charger's own rated maxCapacity field says (confirmed by the
 # customer's real-world knowledge of their fleet/site — the field would
-# otherwise overstate what's actually achievable there). Flagged as slow
-# below half that real ceiling.
+# otherwise overstate what's actually achievable there). Used as the
+# reference ceiling in step 3 below, in place of the charger's maxCapacity.
 WATTSPOT_MAX_KW = 20.0
 WATTSPOT_SLOW_THRESHOLD_KW = WATTSPOT_MAX_KW * 0.5  # 10.0
 
-# All other sites: flagged as slow below this fraction of the charger's own
-# maxCapacity (from get_connector_details()).
-DEFAULT_SLOW_THRESHOLD_RATIO = 0.5
+# All other sites: flagged as slow if the charger isn't offering at least
+# this fraction of its own rated maxCapacity. Starting point, not yet
+# confirmed against real-world sessions — 25% was chosen as loose enough
+# not to trip on a legitimately-normal Wattspot-style session, but still
+# low enough to catch a charger genuinely underperforming. Expect to
+# revisit this once it's been watched running for a while.
+UNIVERSAL_SLOW_THRESHOLD_RATIO = 0.25
+
+# If the vehicle is drawing at least this fraction of what the charger is
+# offering, it's "taking what it's given" — any slowness at that point is
+# the charger's issue, not the vehicle's own charging curve/BMS choice.
+VEHICLE_TAKING_OFFERED_RATIO = 0.9
 
 # Charging naturally tapers as a battery nears full — that's expected
 # behavior, not a fault. Don't flag as slow purely due to natural taper.
 SOC_TAPER_THRESHOLD = 80
+
+# A sibling connector counts as "actively charging" (for the shared-load
+# check) above this power draw — filters out a connector that's merely
+# plugged in but idle/finished.
+SIBLING_ACTIVE_THRESHOLD_KW = 1.0
 
 
 def is_wattspot_org(org: dict | None) -> bool:
@@ -1795,49 +1827,90 @@ def is_wattspot_org(org: dict | None) -> bool:
 
 
 def is_charging_slow(power_kw: float | None, soc_percent: float | None,
-                      max_capacity_kw: float | None, is_wattspot: bool) -> bool | None:
+                      current_a: float | None, current_offered_a: float | None,
+                      max_capacity_kw: float | None, other_connector_active: bool,
+                      is_wattspot: bool) -> tuple:
     """
-    Judges whether a charging session's live power reading counts as
-    meaningfully slow.
+    Judges whether a charging session is genuinely running slow, using
+    the same decision framework for every site (including Wattspot —
+    only the reference ceiling in step 3 differs there):
 
-    - Wattspot sites: flagged as slow below WATTSPOT_SLOW_THRESHOLD_KW
-      (half of the real-world ~20kW ceiling for that site, not the
-      charger's own rated maxCapacity).
-    - All other sites: flagged as slow below DEFAULT_SLOW_THRESHOLD_RATIO
-      of the charger's own maxCapacity.
-    - Either way, NEVER flagged as slow if SoC is at/above
-      SOC_TAPER_THRESHOLD — charging naturally slows near a full battery,
-      and that's normal, not a fault.
+    1. SoC >= SOC_TAPER_THRESHOLD → normal. Charging naturally tapers
+       near a full battery; that's expected, not a fault.
+    2. Compare Current.Import (what the vehicle is drawing) against
+       Current.Offered (what the charger is making available). If the
+       vehicle is drawing meaningfully less than what's offered, the
+       vehicle itself is the limiting factor (its own charging curve or
+       BMS decision) — not the charger's fault, regardless of the
+       absolute number.
+    3. Otherwise the vehicle is taking most/all of what's offered, so the
+       charger is the bottleneck — check whether what it's offering is
+       itself a healthy amount: Wattspot sites compare against the fixed
+       real-world ~20kW ceiling; every other site compares against that
+       specific charger's own rated maxCapacity.
+    4. If step 3 comes back low, check whether another connector on the
+       same charger is also actively charging — a plausible sign of
+       shared/dynamic load, not necessarily a fault. This does NOT
+       resolve to "normal" (we can't confirm that from here) — it stays
+       unresolved (None) but with an explanatory reason for the agent.
 
-    Returns True (slow), False (normal), or None if there isn't enough
-    data to judge (no power reading, or — for a non-Wattspot site — no
-    known maxCapacity to compare against).
+    Returns (verdict, reason):
+    - verdict: True (slow), False (normal), or None (genuinely slow-
+      looking but with a plausible explanation, or not enough data to
+      judge at all) — None always still escalates, just with context.
+    - reason: a short plain-English explanation, always populated,
+      meant for escalation notes (not shown verbatim to the customer).
     """
-    if power_kw is None:
-        return None
-
     if soc_percent is not None and soc_percent >= SOC_TAPER_THRESHOLD:
-        return False
+        return False, f"SoC at {soc_percent}% — natural taper near full, not a fault"
 
+    if power_kw is None:
+        return None, "no live power reading available"
+
+    # Step 2: is the vehicle the bottleneck?
+    if current_a is not None and current_offered_a is not None and current_offered_a > 0:
+        take_ratio = current_a / current_offered_a
+        if take_ratio < VEHICLE_TAKING_OFFERED_RATIO:
+            return False, (
+                f"vehicle drawing {current_a}A of {current_offered_a}A offered "
+                f"({take_ratio:.0%}) — vehicle-limited, not a charger fault"
+            )
+
+    # Step 3: is what's being offered/delivered itself a healthy amount?
     if is_wattspot:
-        return power_kw < WATTSPOT_SLOW_THRESHOLD_KW
+        threshold_kw = WATTSPOT_SLOW_THRESHOLD_KW
+        threshold_desc = f"{WATTSPOT_SLOW_THRESHOLD_KW}kW (Wattspot real-world ceiling)"
+    elif max_capacity_kw and max_capacity_kw > 0:
+        threshold_kw = max_capacity_kw * UNIVERSAL_SLOW_THRESHOLD_RATIO
+        threshold_desc = f"{threshold_kw:.1f}kW ({UNIVERSAL_SLOW_THRESHOLD_RATIO:.0%} of {max_capacity_kw}kW rated max)"
+    else:
+        return None, "no known max capacity to compare against"
 
-    if max_capacity_kw is None or max_capacity_kw <= 0:
-        return None
+    if power_kw >= threshold_kw:
+        return False, f"delivering {power_kw}kW, at/above the {threshold_desc} threshold"
 
-    return power_kw < (max_capacity_kw * DEFAULT_SLOW_THRESHOLD_RATIO)
+    # Step 4: below threshold — check for a shared-load explanation
+    if other_connector_active:
+        return None, (
+            f"delivering {power_kw}kW, below the {threshold_desc} threshold — but "
+            "another connector on this charger is also actively charging, which "
+            "may explain it (shared/dynamic load)"
+        )
+
+    return True, f"delivering {power_kw}kW, below the {threshold_desc} threshold, no other connector active to explain it"
 
 
 def escalate_slow_charging(user_id: str, state: dict, description: str = "", connector_number: int = None) -> str:
     """
     For slow-charging reports: pulls the charger's live meter reading and
-    judges whether it's genuinely slow using is_charging_slow() (Wattspot
-    fixed ceiling vs. charger's own maxCapacity elsewhere, with an SoC
-    taper exemption). If it looks normal, reassures the customer directly
-    and does NOT escalate. If it's genuinely slow — or we don't have
-    enough data to judge — escalates with the live reading (and the
-    bot's verdict, if any) attached for a human agent to review, rather
-    than attempting a remote restart first.
+    judges whether it's genuinely slow using is_charging_slow() — the
+    same universal decision framework for every site, including Wattspot
+    (only the reference ceiling differs there). If it looks normal,
+    reassures the customer directly and does NOT escalate. If it's
+    genuinely slow — or the reading is low but has a plausible
+    explanation, or there's not enough data to judge — escalates with
+    the live reading and the bot's reasoning attached for a human agent
+    to review, rather than attempting a remote restart first.
 
     If connector_number is given (from asking the customer which
     connector they're on), filters the meter readings down to just that
@@ -1851,8 +1924,9 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
     charger_uuid = state.get("charger_uuid", "")
     network_id = state.get("network_id", "")
     org = get_org_by_index(state.get("org_index"))
-    meter_readings = get_charger_meter_values(charger_uuid, network_id, org) if org else None
+    all_readings = get_charger_meter_values(charger_uuid, network_id, org) if org else None
 
+    meter_readings = all_readings
     if meter_readings and connector_number is not None:
         filtered = [r for r in meter_readings if r.get("connector_id") == connector_number]
         if filtered:
@@ -1862,13 +1936,26 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
     # reading to work with — if we couldn't narrow down to the specific
     # connector the customer is on, don't guess; escalate as before.
     slow_verdict = None
+    verdict_reason = ""
     primary_reading = None
     if meter_readings and len(meter_readings) == 1:
         primary_reading = meter_readings[0]
-        slow_verdict = is_charging_slow(
+
+        # Is any OTHER connector on this same charger actively charging
+        # right now? A plausible sign of shared/dynamic load.
+        other_connector_active = any(
+            r.get("power_kw", 0) and r["power_kw"] >= SIBLING_ACTIVE_THRESHOLD_KW
+            for r in (all_readings or [])
+            if r is not primary_reading
+        )
+
+        slow_verdict, verdict_reason = is_charging_slow(
             primary_reading.get("power_kw"),
             primary_reading.get("soc_percent"),
+            primary_reading.get("current_a"),
+            primary_reading.get("current_offered_a"),
             primary_reading.get("max_capacity_kw"),
+            other_connector_active,
             is_wattspot_org(org),
         )
 
@@ -1899,7 +1986,7 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
 
     meter_note = format_meter_values_for_agent(meter_readings)
     connector_note = f"Customer reports charging on Connector {connector_number}." if connector_number is not None else ""
-    verdict_note = "Bot check: reading appears slow relative to this charger's normal range." if slow_verdict is True else ""
+    verdict_note = f"Bot check: {verdict_reason}." if verdict_reason else ""
 
     notes_parts = [n for n in [description, connector_note, verdict_note, meter_note] if n]
     combined_notes = "\n".join(notes_parts)
