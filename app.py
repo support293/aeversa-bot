@@ -109,7 +109,7 @@ MID_FLOW_STEPS = {
     "opt1_error_check", "opt1_try_another_charger", "opt1_other_charger_working",
     "opt1_confirm_unplugged",
     "opt2_power_on_site", "opt2_another_charger", "opt2_other_charger_works",
-    "opt2_which_connector",
+    "opt2_which_connector", "slow_charging_normal_followup",
     "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_wifi",
     "opt3_wattspot_replug", "opt3_other_4g", "opt3_other_final_restart",
     "await_restart_result",
@@ -131,6 +131,7 @@ YES_NO_STEPS = [
     "opt3_wattspot_replug", "opt3_other_final_restart",
     "await_restart_result",
     "emergency_stop_check", "emergency_stop_replug_result",
+    "slow_charging_normal_followup",
 ]
 
 # ── Media Library ─────────────────────────────────────────────────────────────
@@ -1460,8 +1461,7 @@ def parse_connector_choice(msg_raw: str) -> int | None:
 
 CONNECTOR_QUESTION = (
     "🔌 Which connector are you charging on?\n\n"
-    "Reply with the number (*1* or *2*), the letter (*A* or *B*), "
-    "or which side it's on (*left* or *right*)."
+    "Reply with the number (*1* or *2*) or the letter (*A* or *B*)."
 )
 
 
@@ -1960,16 +1960,18 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
         )
 
     if slow_verdict is False:
-        # Looks normal — reassure the customer, don't escalate. Keep the
-        # charger identification in state (just reset the step) since we
-        # explicitly invite them to say AGENT next — if we wiped it here,
-        # that follow-up would have to re-ask for site/Charger ID even
-        # though we already know both.
+        # Looks normal — reassure the customer, don't escalate. Move into
+        # a dedicated follow-up step (not the generic "start" step) so
+        # whatever the customer says next is actually understood as an
+        # answer to this specific question, rather than falling through
+        # to the generic charger-identification/greeting logic. Keep the
+        # charger identification in state either way, since we might
+        # still need it if this ends in an escalation.
         power_kw = primary_reading.get("power_kw")
         soc = primary_reading.get("soc_percent")
         soc_note = f" (battery at {soc}%)" if soc is not None else ""
         user_states[user_id] = {
-            "step": "start",
+            "step": "slow_charging_normal_followup",
             "charger_uuid": state.get("charger_uuid"),
             "charger_id": state.get("charger_id"),
             "charger_name": state.get("charger_name"),
@@ -1980,8 +1982,7 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
         return (
             f"I checked your charger's live data — it's currently delivering "
             f"*{power_kw}kW*{soc_note}, which looks normal. 😊\n\n"
-            "If you're still concerned, just let me know or type *AGENT* to "
-            "speak with our support team."
+            "Is there anything else I can help with?"
         )
 
     meter_note = format_meter_values_for_agent(meter_readings)
@@ -2984,6 +2985,27 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return escalate_slow_charging(user_id, state, description)
         user_states[user_id] = {**state, "step": "opt2_which_connector", "connector_retries": retries}
         return f"Sorry, I didn't quite catch that! 😊\n\n{CONNECTOR_QUESTION}"
+
+    # ── Slow charging — after telling the customer the reading looks normal ──
+    if step == "slow_charging_normal_followup":
+        QUESTION = "Is there anything else I can help with?"
+        def yes_fn():
+            # They've indicated they still need something — the bot has
+            # already done its full diagnostic check here, so a human is
+            # the right next step now, without ever presenting AGENT as
+            # a menu choice up front.
+            return start_escalation(user_id, state,
+                "No problem, let me connect you with our support team who "
+                "can take a closer look. 😊")
+        def no_fn():
+            user_states[user_id] = {"step": "start"}
+            return "Great, glad we could help! 😊 Type *MENU* anytime if you need us again."
+        if msg == "yes":
+            return yes_fn()
+        elif msg == "no":
+            return no_fn()
+        else:
+            return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
 
     # ── Something else ────────────────────────────────────────────────────────
     if step == "something_else":
