@@ -765,18 +765,29 @@ def get_charger_alerts(charger_uuid: str, network_id: str, org: dict) -> list:
     return unresolved_alerts
 
 
-def get_connector_numbers(charger_uuid: str, network_id: str, org: dict) -> dict:
+def get_connector_details(charger_uuid: str, network_id: str, org: dict) -> dict:
     """
-    Fetches the friendly connector numbers (1, 2, ...) for every
-    connector on a charger, keyed by connector UUID.
+    Fetches per-connector details for every connector on a charger, keyed
+    by connector UUID: friendly number and rated max capacity (kW).
     Endpoint: GET /v2/connectors/?network={uuid}&chargepoint={uuid}
+
     Confirmed via docs: the response's 'connectorId' field is the
     integer "Connector 1+" label matching the Ampcontrol dashboard
     directly (1-indexed, no offset needed) — separate from the
     connector's own 'id' (its UUID).
-    Returns {connector_uuid: connector_number}. Returns an empty dict on
-    any failure, so callers can gracefully fall back to showing the raw
-    UUID rather than breaking.
+
+    'maxCapacity' is used as the charger's real rated ceiling for
+    judging whether a charging session is running slow — confirmed
+    stable (60.0) across three separate real pulls on two different
+    chargers, and matching known real-world charger ratings, unlike
+    'currentLimit'/'maxAmperage'/'currentChargingLoad' on the same
+    connector objects, which didn't reconcile with independently-known
+    real current/power readings and aren't used here.
+
+    Returns {connector_uuid: {"number": int, "max_capacity_kw": float|None}}.
+    Returns an empty dict on any failure, so callers can gracefully fall
+    back (e.g. showing the raw UUID, or skipping the slow/normal
+    judgment) rather than breaking.
     """
     if not org:
         return {}
@@ -786,29 +797,25 @@ def get_connector_numbers(charger_uuid: str, network_id: str, org: dict) -> dict
     data = ampcontrol_get(f"/connectors/?network={resolved_network_id}&chargepoint={charger_uuid}", org)
     if not data or not data.get("data"):
         return {}
-    mapping = {}
+    details = {}
     for connector in data["data"]:
         connector_uuid = connector.get("id")
         connector_number = connector.get("connectorId")
+        max_capacity = connector.get("maxCapacity")
         if connector_uuid is not None and connector_number is not None:
-            mapping[connector_uuid] = connector_number
-    return mapping
+            details[connector_uuid] = {"number": connector_number, "max_capacity_kw": max_capacity}
+    return details
 
 
 def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> list | None:
     """
     Fetches the most recent meter reading for EACH connector on a
-    charger — specifically Current.Import (Amps) and Power.Active.Import
-    (kW) — for attaching as diagnostic context on slow-charging
-    escalations.
+    charger — Current.Import (Amps), Power.Active.Import (kW), and SoC
+    (%) — for attaching as diagnostic context on slow-charging
+    escalations, and for judging whether a session is running slow.
     Endpoint: GET /v2/meter_values/?network={uuid}&charger={uuid}
     At least one of network/charger/vehicle/evse/connector is required;
     network+charger together satisfies that, same pattern as alerts.
-
-    Deliberately does NOT judge whether any reading counts as "slow" —
-    just surfaces the real numbers for a human agent to interpret, since
-    what counts as a meaningfully low reading depends on the vehicle and
-    charge stage and isn't something to guess at here.
 
     IMPORTANT: a charger can have multiple connectors charging
     simultaneously (confirmed against real data — a 2-connector DC
@@ -824,9 +831,11 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
 
     Returns a list of dicts — one per connector with any data —
     [{"connector_id": int|str, "current_a": float|None, "power_kw": float|None,
-      "current_timestamp": str|None, "power_timestamp": str|None}, ...],
+      "soc_percent": float|None, "max_capacity_kw": float|None,
+      "current_timestamp": str|None, "power_timestamp": str|None,
+      "soc_timestamp": str|None}, ...],
     or None if no meter data is available at all. connector_id is the
-    friendly dashboard number (e.g. 1, 2) via get_connector_numbers()
+    friendly dashboard number (e.g. 1, 2) via get_connector_details()
     where available, falling back to the raw connector UUID otherwise.
 
     Power is normalized to kW by reading each sample's own 'unit' field
@@ -854,8 +863,8 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
         connector_id = record.get("connectorId") or "unknown"
         entry = by_connector.setdefault(connector_id, {
             "connector_id": connector_id,
-            "current_a": None, "power_kw": None,
-            "current_timestamp": None, "power_timestamp": None,
+            "current_a": None, "power_kw": None, "soc_percent": None, "max_capacity_kw": None,
+            "current_timestamp": None, "power_timestamp": None, "soc_timestamp": None,
         })
         for mv in record.get("meterValues", []):
             ts = mv.get("timestamp")
@@ -894,24 +903,33 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
                         entry["power_timestamp"] = ts
                     except (TypeError, ValueError):
                         pass
+                elif measurand == "SoC" and (entry["soc_timestamp"] is None or ts > entry["soc_timestamp"]):
+                    try:
+                        entry["soc_percent"] = float(value)
+                        entry["soc_timestamp"] = ts
+                    except (TypeError, ValueError):
+                        pass
 
     readings = [r for r in by_connector.values() if r["current_a"] is not None or r["power_kw"] is not None]
     if not readings:
         return None
 
     # Swap raw connector UUIDs for the friendly dashboard number (e.g. "1",
-    # "2") where we can — falls back to the raw UUID for any connector
-    # not found in the mapping, rather than dropping the reading.
-    connector_number_map = get_connector_numbers(charger_uuid, network_id, org)
+    # "2") and attach each connector's rated max capacity — falls back to
+    # the raw UUID / None respectively for any connector not found, rather
+    # than dropping the reading.
+    connector_details = get_connector_details(charger_uuid, network_id, org)
     for r in readings:
-        friendly_number = connector_number_map.get(r["connector_id"])
-        if friendly_number is not None:
-            r["connector_id"] = friendly_number
+        details = connector_details.get(r["connector_id"])
+        if details:
+            r["max_capacity_kw"] = details.get("max_capacity_kw")
+            if details.get("number") is not None:
+                r["connector_id"] = details["number"]
 
     log.info(
         f"Charger {charger_uuid} (org '{org.get('name')}') → meter readings for "
         f"{len(readings)} connector(s): " +
-        "; ".join(f"{r['connector_id']}: {r['current_a']}A/{r['power_kw']}kW" for r in readings)
+        "; ".join(f"{r['connector_id']}: {r['current_a']}A/{r['power_kw']}kW/{r['soc_percent']}% (max {r['max_capacity_kw']}kW)" for r in readings)
     )
     return readings
 
@@ -1753,14 +1771,73 @@ def start_escalation(user_id: str, state: dict, context_msg: str = "") -> str:
     )
 
 
+# ── Slow-charging decision thresholds ─────────────────────────────────────────
+# Wattspot sites: real-world usable charging ceiling is ~20kW regardless of
+# what the charger's own rated maxCapacity field says (confirmed by the
+# customer's real-world knowledge of their fleet/site — the field would
+# otherwise overstate what's actually achievable there). Flagged as slow
+# below half that real ceiling.
+WATTSPOT_MAX_KW = 20.0
+WATTSPOT_SLOW_THRESHOLD_KW = WATTSPOT_MAX_KW * 0.5  # 10.0
+
+# All other sites: flagged as slow below this fraction of the charger's own
+# maxCapacity (from get_connector_details()).
+DEFAULT_SLOW_THRESHOLD_RATIO = 0.5
+
+# Charging naturally tapers as a battery nears full — that's expected
+# behavior, not a fault. Don't flag as slow purely due to natural taper.
+SOC_TAPER_THRESHOLD = 80
+
+
+def is_wattspot_org(org: dict | None) -> bool:
+    """True if the given org is the Wattspot organization."""
+    return bool(org) and org.get("name", "").strip().lower() == "wattspot"
+
+
+def is_charging_slow(power_kw: float | None, soc_percent: float | None,
+                      max_capacity_kw: float | None, is_wattspot: bool) -> bool | None:
+    """
+    Judges whether a charging session's live power reading counts as
+    meaningfully slow.
+
+    - Wattspot sites: flagged as slow below WATTSPOT_SLOW_THRESHOLD_KW
+      (half of the real-world ~20kW ceiling for that site, not the
+      charger's own rated maxCapacity).
+    - All other sites: flagged as slow below DEFAULT_SLOW_THRESHOLD_RATIO
+      of the charger's own maxCapacity.
+    - Either way, NEVER flagged as slow if SoC is at/above
+      SOC_TAPER_THRESHOLD — charging naturally slows near a full battery,
+      and that's normal, not a fault.
+
+    Returns True (slow), False (normal), or None if there isn't enough
+    data to judge (no power reading, or — for a non-Wattspot site — no
+    known maxCapacity to compare against).
+    """
+    if power_kw is None:
+        return None
+
+    if soc_percent is not None and soc_percent >= SOC_TAPER_THRESHOLD:
+        return False
+
+    if is_wattspot:
+        return power_kw < WATTSPOT_SLOW_THRESHOLD_KW
+
+    if max_capacity_kw is None or max_capacity_kw <= 0:
+        return None
+
+    return power_kw < (max_capacity_kw * DEFAULT_SLOW_THRESHOLD_RATIO)
+
+
 def escalate_slow_charging(user_id: str, state: dict, description: str = "", connector_number: int = None) -> str:
     """
     For slow-charging reports: pulls the charger's live meter reading and
-    escalates immediately with it attached, rather than attempting a
-    remote restart first. This is deliberate for now — until real-world
-    'normal vs slow' thresholds are defined, every slow-charging report
-    goes straight to a human with the actual Amp/kW numbers attached, so
-    an agent can judge it rather than the bot guessing.
+    judges whether it's genuinely slow using is_charging_slow() (Wattspot
+    fixed ceiling vs. charger's own maxCapacity elsewhere, with an SoC
+    taper exemption). If it looks normal, reassures the customer directly
+    and does NOT escalate. If it's genuinely slow — or we don't have
+    enough data to judge — escalates with the live reading (and the
+    bot's verdict, if any) attached for a human agent to review, rather
+    than attempting a remote restart first.
 
     If connector_number is given (from asking the customer which
     connector they're on), filters the meter readings down to just that
@@ -1768,7 +1845,8 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
     different vehicles simultaneously, so showing every connector's data
     would be ambiguous for the agent. Falls back to showing all
     connectors if the specified one isn't found in the readings, rather
-    than showing nothing.
+    than showing nothing — and in that case, the slow/normal judgment is
+    skipped too, since it needs a single specific connector's reading.
     """
     charger_uuid = state.get("charger_uuid", "")
     network_id = state.get("network_id", "")
@@ -1780,10 +1858,38 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
         if filtered:
             meter_readings = filtered
 
+    # Only judge slow-vs-normal when we have exactly one connector's
+    # reading to work with — if we couldn't narrow down to the specific
+    # connector the customer is on, don't guess; escalate as before.
+    slow_verdict = None
+    primary_reading = None
+    if meter_readings and len(meter_readings) == 1:
+        primary_reading = meter_readings[0]
+        slow_verdict = is_charging_slow(
+            primary_reading.get("power_kw"),
+            primary_reading.get("soc_percent"),
+            primary_reading.get("max_capacity_kw"),
+            is_wattspot_org(org),
+        )
+
+    if slow_verdict is False:
+        # Looks normal — reassure the customer, don't escalate
+        power_kw = primary_reading.get("power_kw")
+        soc = primary_reading.get("soc_percent")
+        soc_note = f" (battery at {soc}%)" if soc is not None else ""
+        user_states[user_id] = {"step": "start"}
+        return (
+            f"I checked your charger's live data — it's currently delivering "
+            f"*{power_kw}kW*{soc_note}, which looks normal. 😊\n\n"
+            "If you're still concerned, just let me know or type *AGENT* to "
+            "speak with our support team."
+        )
+
     meter_note = format_meter_values_for_agent(meter_readings)
     connector_note = f"Customer reports charging on Connector {connector_number}." if connector_number is not None else ""
+    verdict_note = "Bot check: reading appears slow relative to this charger's normal range." if slow_verdict is True else ""
 
-    notes_parts = [n for n in [description, connector_note, meter_note] if n]
+    notes_parts = [n for n in [description, connector_note, verdict_note, meter_note] if n]
     combined_notes = "\n".join(notes_parts)
 
     escalate_state = {**state, "fault_type": "Slow charging"}
