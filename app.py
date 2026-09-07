@@ -1992,10 +1992,11 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
             )
         elif verdict_reason_code == "vehicle_limited" and current_a is not None and current_offered_a is not None:
             explanation = (
-                f"This charger is offering up to *{current_offered_a}A*, but your "
-                f"vehicle is only drawing *{current_a}A* right now — that's your "
-                "vehicle's own battery management system choosing the rate, not "
-                "the charger holding it back."
+                f"Good news — this charger has plenty of power available (up to "
+                f"*{current_offered_a}A*), and your vehicle is currently charging "
+                f"at *{current_a}A*, which is exactly what it's asking for right "
+                "now. This is completely normal — vehicles often manage their "
+                "own charging speed for battery health."
             )
         elif verdict_reason_code == "healthy_max" and max_capacity_kw:
             if power_kw is not None and power_kw >= max_capacity_kw:
