@@ -1998,11 +1998,18 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
                 "the charger holding it back."
             )
         elif verdict_reason_code == "healthy_max" and max_capacity_kw:
-            explanation = (
-                f"You're delivering *{power_kw}kW*, which is close to this "
-                f"connector's maximum of *{max_capacity_kw}kW* — you're getting "
-                "essentially full speed here."
-            )
+            if power_kw is not None and power_kw >= max_capacity_kw:
+                explanation = (
+                    f"You're delivering *{power_kw}kW*, which meets or exceeds this "
+                    f"connector's typical rating of *{max_capacity_kw}kW* — you're "
+                    "getting full speed here."
+                )
+            else:
+                explanation = (
+                    f"You're delivering *{power_kw}kW*, which is close to this "
+                    f"connector's maximum of *{max_capacity_kw}kW* — you're getting "
+                    "essentially full speed here."
+                )
         else:
             explanation = f"It's currently delivering *{power_kw}kW*{soc_note}, which looks normal."
 
