@@ -1854,18 +1854,24 @@ def is_charging_slow(power_kw: float | None, soc_percent: float | None,
        resolve to "normal" (we can't confirm that from here) — it stays
        unresolved (None) but with an explanatory reason for the agent.
 
-    Returns (verdict, reason):
+    Returns (verdict, reason, reason_code):
     - verdict: True (slow), False (normal), or None (genuinely slow-
       looking but with a plausible explanation, or not enough data to
       judge at all) — None always still escalates, just with context.
     - reason: a short plain-English explanation, always populated,
-      meant for escalation notes (not shown verbatim to the customer).
+      meant for escalation notes (not shown verbatim to the customer —
+      it's written for a human agent, not the driver).
+    - reason_code: a short stable string identifying WHICH case fired
+      ("taper", "vehicle_limited", "healthy_max", "shared_load",
+      "genuinely_slow", "no_power_data", "no_max_data") — lets callers
+      build a tailored, driver-friendly explanation for the "normal"
+      cases without having to parse the agent-facing reason text.
     """
     if soc_percent is not None and soc_percent >= SOC_TAPER_THRESHOLD:
-        return False, f"SoC at {soc_percent}% — natural taper near full, not a fault"
+        return False, f"SoC at {soc_percent}% — natural taper near full, not a fault", "taper"
 
     if power_kw is None:
-        return None, "no live power reading available"
+        return None, "no live power reading available", "no_power_data"
 
     # Step 2: is the vehicle the bottleneck?
     if current_a is not None and current_offered_a is not None and current_offered_a > 0:
@@ -1874,7 +1880,7 @@ def is_charging_slow(power_kw: float | None, soc_percent: float | None,
             return False, (
                 f"vehicle drawing {current_a}A of {current_offered_a}A offered "
                 f"({take_ratio:.0%}) — vehicle-limited, not a charger fault"
-            )
+            ), "vehicle_limited"
 
     # Step 3: is what's being offered/delivered itself a healthy amount?
     if is_wattspot:
@@ -1884,10 +1890,10 @@ def is_charging_slow(power_kw: float | None, soc_percent: float | None,
         threshold_kw = max_capacity_kw * UNIVERSAL_SLOW_THRESHOLD_RATIO
         threshold_desc = f"{threshold_kw:.1f}kW ({UNIVERSAL_SLOW_THRESHOLD_RATIO:.0%} of {max_capacity_kw}kW rated max)"
     else:
-        return None, "no known max capacity to compare against"
+        return None, "no known max capacity to compare against", "no_max_data"
 
     if power_kw >= threshold_kw:
-        return False, f"delivering {power_kw}kW, at/above the {threshold_desc} threshold"
+        return False, f"delivering {power_kw}kW, at/above the {threshold_desc} threshold", "healthy_max"
 
     # Step 4: below threshold — check for a shared-load explanation
     if other_connector_active:
@@ -1895,9 +1901,9 @@ def is_charging_slow(power_kw: float | None, soc_percent: float | None,
             f"delivering {power_kw}kW, below the {threshold_desc} threshold — but "
             "another connector on this charger is also actively charging, which "
             "may explain it (shared/dynamic load)"
-        )
+        ), "shared_load"
 
-    return True, f"delivering {power_kw}kW, below the {threshold_desc} threshold, no other connector active to explain it"
+    return True, f"delivering {power_kw}kW, below the {threshold_desc} threshold, no other connector active to explain it", "genuinely_slow"
 
 
 def escalate_slow_charging(user_id: str, state: dict, description: str = "", connector_number: int = None) -> str:
@@ -1937,6 +1943,7 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
     # connector the customer is on, don't guess; escalate as before.
     slow_verdict = None
     verdict_reason = ""
+    verdict_reason_code = ""
     primary_reading = None
     if meter_readings and len(meter_readings) == 1:
         primary_reading = meter_readings[0]
@@ -1949,7 +1956,7 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
             if r is not primary_reading
         )
 
-        slow_verdict, verdict_reason = is_charging_slow(
+        slow_verdict, verdict_reason, verdict_reason_code = is_charging_slow(
             primary_reading.get("power_kw"),
             primary_reading.get("soc_percent"),
             primary_reading.get("current_a"),
@@ -1969,7 +1976,36 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
         # still need it if this ends in an escalation.
         power_kw = primary_reading.get("power_kw")
         soc = primary_reading.get("soc_percent")
+        current_a = primary_reading.get("current_a")
+        current_offered_a = primary_reading.get("current_offered_a")
+        max_capacity_kw = primary_reading.get("max_capacity_kw")
         soc_note = f" (battery at {soc}%)" if soc is not None else ""
+
+        # A driver-friendly explanation matching WHY it's normal, not just
+        # the bare number — a reference point is what actually makes the
+        # verdict trustworthy rather than an unexplained assertion.
+        if verdict_reason_code == "taper" and soc is not None:
+            explanation = (
+                f"Your battery is at *{soc}%*, so charging naturally slows down "
+                "as it tops up — that protects the battery and happens on every "
+                "EV, not just here."
+            )
+        elif verdict_reason_code == "vehicle_limited" and current_a is not None and current_offered_a is not None:
+            explanation = (
+                f"This charger is offering up to *{current_offered_a}A*, but your "
+                f"vehicle is only drawing *{current_a}A* right now — that's your "
+                "vehicle's own battery management system choosing the rate, not "
+                "the charger holding it back."
+            )
+        elif verdict_reason_code == "healthy_max" and max_capacity_kw:
+            explanation = (
+                f"You're delivering *{power_kw}kW*, which is close to this "
+                f"connector's maximum of *{max_capacity_kw}kW* — you're getting "
+                "essentially full speed here."
+            )
+        else:
+            explanation = f"It's currently delivering *{power_kw}kW*{soc_note}, which looks normal."
+
         user_states[user_id] = {
             "step": "slow_charging_normal_followup",
             "charger_uuid": state.get("charger_uuid"),
@@ -1985,8 +2021,7 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
             ),
         }
         return (
-            f"I checked your charger's live data — it's currently delivering "
-            f"*{power_kw}kW*{soc_note}, which looks normal. 😊\n\n"
+            f"I checked your charger's live data. 😊\n\n{explanation}\n\n"
             "Is there anything else I can help with?"
         )
 
