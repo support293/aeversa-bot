@@ -1311,6 +1311,69 @@ def poll_emergency_stop_cleared(user_id: str, charger_uuid: str, network_id: str
     user_states[user_id] = {**current, "step": "start"}
 
 
+def poll_session_ramp_up(user_id: str, charger_uuid: str, network_id: str,
+                          connector_number, charger_name: str, org: dict,
+                          description: str = "",
+                          initial_delay_secs: int = 30,
+                          timeout_secs: int = 120, interval_secs: int = 20):
+    """
+    Runs in a background thread when a customer reports slow charging but
+    the connector shows ~0kW while its OCPP status says "Charging" — a
+    session can take up to ~2 minutes to ramp up to real power delivery
+    after starting (vehicle/charger negotiation), so an immediate
+    near-zero reading doesn't necessarily mean a genuine fault, the same
+    reasoning already applied before checking a restart. Waits, then
+    re-checks the same connector's power; once it's flowing, proactively
+    re-runs the full slow/normal decision (via escalate_slow_charging, so
+    the customer gets the same real verdict — normal or genuinely slow —
+    they'd have gotten from a fresh report) and messages them with it.
+    If it's still at ~0kW after timeout_secs, escalates automatically
+    instead of leaving the customer waiting indefinitely.
+    """
+    time.sleep(initial_delay_secs)
+    elapsed = initial_delay_secs
+    while elapsed < timeout_secs:
+        readings = get_charger_meter_values(charger_uuid, network_id, org)
+        reading = next((r for r in (readings or []) if r.get("connector_id") == connector_number), None)
+        if reading and reading.get("power_kw") is not None and reading["power_kw"] > RAMP_UP_POWER_THRESHOLD_KW:
+            log.info(f"✅ Session on connector {connector_number} ramped up to {reading['power_kw']}kW after {elapsed}s — re-checking for {user_id}")
+            current = user_states.get(user_id, {})
+            if current.get("step") == "slow_charging_ramp_up_wait":
+                result_msg = escalate_slow_charging(user_id, current, description, connector_number=connector_number)
+                send_whatsapp_message(user_id, result_msg)
+            return
+        time.sleep(interval_secs)
+        elapsed += interval_secs
+
+    # Still ~0kW after the full window — genuinely worth a human now,
+    # rather than a customer-facing fault the bot can't actually diagnose
+    # further (no ramp-up explanation left to offer)
+    log.warning(f"⚠️ Session on connector {connector_number} still not delivering power after {timeout_secs}s")
+    current = user_states.get(user_id, {})
+    if current.get("step") != "slow_charging_ramp_up_wait":
+        return  # customer moved on to something else in the meantime
+    timeout_fault = "Slow charging — session did not start delivering power"
+    send_whatsapp_message(
+        user_id,
+        f"⏳ Your session on Connector {connector_number} still hasn't started "
+        "delivering power after a couple of minutes. 😔\n\nLet me connect you "
+        "with our support team so they can look into it directly."
+    )
+    notify_agents(user_id, {
+        **current,
+        "fault_type": timeout_fault,
+        "extra_notes": description,
+    })
+    send_escalation_email(
+        customer_number=user_id.replace("whatsapp:", ""),
+        fault_type=timeout_fault,
+        site=current.get("site"),
+        charger_id=current.get("charger_id") or current.get("charger_uuid"),
+        extra_notes=description,
+    )
+    user_states[user_id] = {**current, "step": "start"}
+
+
 def extract_uuid_from_text(text: str) -> str | None:
     """
     Extracts a charger UUID from text.
@@ -1955,6 +2018,12 @@ SOC_TAPER_THRESHOLD = 80
 # plugged in but idle/finished.
 SIBLING_ACTIVE_THRESHOLD_KW = 1.0
 
+# A connector reporting at/below this power while its OCPP status is
+# "Charging" is treated as a session that may have just started rather
+# than a genuine fault — vehicle/charger negotiation can take up to ~2
+# minutes before real power delivery begins.
+RAMP_UP_POWER_THRESHOLD_KW = 0.5
+
 
 def is_wattspot_org(org: dict | None) -> bool:
     """
@@ -2197,6 +2266,43 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
                 f"{primary_reading.get('connector_id', connector_number)} right "
                 "now. 🔌\n\nCould you check that your vehicle is properly plugged "
                 "in? Once it's charging, just let me know and I'll take another look."
+            )
+
+        # A session that's actively "Charging" but delivering ~0kW could
+        # be a genuine fault — or it could just have started moments ago.
+        # Vehicle/charger negotiation can take up to ~2 minutes before
+        # real power delivery begins, so an immediate near-zero reading
+        # doesn't necessarily mean anything's wrong yet. Wait and
+        # re-check in the background rather than judging it immediately,
+        # the same reasoning already used before checking a restart.
+        power_kw_reading = primary_reading.get("power_kw")
+        if power_kw_reading is not None and power_kw_reading <= RAMP_UP_POWER_THRESHOLD_KW:
+            org_index = state.get("org_index")
+            connector_id_for_poll = primary_reading.get("connector_id", connector_number)
+            user_states[user_id] = {
+                "step": "slow_charging_ramp_up_wait",
+                "charger_uuid": state.get("charger_uuid"),
+                "charger_id": state.get("charger_id"),
+                "charger_name": state.get("charger_name"),
+                "network_id": state.get("network_id"),
+                "org_index": org_index,
+                "site": state.get("site"),
+                "fault_type": state.get("fault_type", "Slow charging"),
+                "slow_charging_description": description,
+                "connector_number": connector_number,
+            }
+            if org:
+                threading.Thread(
+                    target=lambda: poll_session_ramp_up(
+                        user_id, charger_uuid, network_id, connector_id_for_poll,
+                        state.get("charger_name", "your charger"), org, description
+                    ),
+                    daemon=True
+                ).start()
+            return (
+                f"It looks like your session on Connector {connector_id_for_poll} may "
+                "have just started — charging can take a minute or two to ramp up to "
+                "full speed. ⏳\n\nI'll check again shortly and let you know."
             )
 
         # Is any OTHER connector on this same charger actively charging
@@ -3345,6 +3451,13 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         # Genuinely re-check rather than just re-showing the same message —
         # whatever they replied, take it as "I've checked, please look again"
         return escalate_slow_charging(user_id, state, description, connector_number=connector_number)
+
+    # ── Slow charging — session may just be ramping up, polling in background ─
+    if step == "slow_charging_ramp_up_wait":
+        return (
+            "⏳ Still checking on your charging speed — I'll message you as soon "
+            "as I have an update. Thanks for your patience!"
+        )
 
     # ── Slow charging — after telling the customer the reading looks normal ──
     if step == "slow_charging_normal_followup":
