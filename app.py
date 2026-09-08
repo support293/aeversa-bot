@@ -1909,6 +1909,14 @@ WATTSPOT_SLOW_THRESHOLD_KW = WATTSPOT_MAX_KW * 0.5  # 10.0
 # revisit this once it's been watched running for a while.
 UNIVERSAL_SLOW_THRESHOLD_RATIO = 0.25
 
+# Wording only, doesn't affect the verdict — a session clearing
+# UNIVERSAL_SLOW_THRESHOLD_RATIO (or the Wattspot threshold) is already
+# judged "not slow", but that alone doesn't make it honest to tell the
+# customer they're at "essentially full speed". That claim is reserved
+# for sessions actually at/above this fraction of the reference ceiling;
+# anything between the two thresholds gets more neutral wording instead.
+CLOSE_TO_MAX_RATIO = 0.7
+
 # If the vehicle is drawing at least this fraction of what the charger is
 # offering, it's "taking what it's given" — any slowness at that point is
 # the charger's issue, not the vehicle's own charging curve/BMS choice.
@@ -2156,11 +2164,19 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
                 # about is WATTSPOT_MAX_KW — max_capacity_kw (the charger's
                 # own hardware rating) was never actually part of this
                 # decision for a Wattspot session, so don't reference it.
-                explanation = (
-                    f"You're delivering *{power_kw}kW*, which is close to the "
-                    f"typical maximum of *{WATTSPOT_MAX_KW}kW* achievable at this "
-                    "site — you're getting essentially full speed here."
-                )
+                pct_of_ceiling = (power_kw / WATTSPOT_MAX_KW) if power_kw is not None else None
+                if pct_of_ceiling is not None and pct_of_ceiling >= CLOSE_TO_MAX_RATIO:
+                    explanation = (
+                        f"You're delivering *{power_kw}kW*, which is close to the "
+                        f"typical maximum of *{WATTSPOT_MAX_KW}kW* achievable at this "
+                        "site — you're getting essentially full speed here."
+                    )
+                else:
+                    explanation = (
+                        f"You're delivering *{power_kw}kW*, which is a normal "
+                        f"charging rate for this site (typical maximum here is "
+                        f"around *{WATTSPOT_MAX_KW}kW*)."
+                    )
             elif max_capacity_kw and power_kw is not None and power_kw >= max_capacity_kw:
                 explanation = (
                     f"You're delivering *{power_kw}kW*, which meets or exceeds this "
@@ -2168,11 +2184,18 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
                     "getting full speed here."
                 )
             elif max_capacity_kw:
-                explanation = (
-                    f"You're delivering *{power_kw}kW*, which is close to this "
-                    f"connector's maximum of *{max_capacity_kw}kW* — you're getting "
-                    "essentially full speed here."
-                )
+                pct_of_max = (power_kw / max_capacity_kw) if power_kw is not None else None
+                if pct_of_max is not None and pct_of_max >= CLOSE_TO_MAX_RATIO:
+                    explanation = (
+                        f"You're delivering *{power_kw}kW*, which is close to this "
+                        f"connector's maximum of *{max_capacity_kw}kW* — you're getting "
+                        "essentially full speed here."
+                    )
+                else:
+                    explanation = (
+                        f"You're delivering *{power_kw}kW* out of this connector's "
+                        f"*{max_capacity_kw}kW* maximum — that's a normal charging rate."
+                    )
             else:
                 explanation = f"It's currently delivering *{power_kw}kW*{soc_note}, which looks normal."
         else:
