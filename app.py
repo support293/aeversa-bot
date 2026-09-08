@@ -878,7 +878,7 @@ def get_active_charging_limit(charger_uuid: str, connector_number: int, org: dic
         if applicable_limit is None:
             continue
 
-        limit_kw = applicable_limit / 1000.0 if rate_unit == "W" else applicable_limit
+        limit_kw = round(applicable_limit / 1000.0, 2) if rate_unit == "W" else round(applicable_limit, 2)
         log.info(
             f"Charger {charger_uuid} connector {connector_number} (org '{org.get('name')}') → "
             f"active charging limit: {limit_kw}kW (profile purpose: {cs_profile.get('chargingProfilePurpose')})"
@@ -981,12 +981,12 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
                         # Watts unless explicitly overridden — don't assume
                         # kW just because that's what we display.
                         if unit == "W":
-                            power_kw_value = raw_value / 1000.0
+                            power_kw_value = round(raw_value / 1000.0, 2)
                         elif unit in ("kW", ""):
-                            power_kw_value = raw_value
+                            power_kw_value = round(raw_value, 2)
                         else:
                             log.warning(f"Unexpected unit '{unit}' for Power.Active.Import on charger {charger_uuid} — using raw value as kW without conversion")
-                            power_kw_value = raw_value
+                            power_kw_value = round(raw_value, 2)
                         entry["power_kw"] = power_kw_value
                         entry["power_timestamp"] = ts
                     except (TypeError, ValueError):
@@ -1902,8 +1902,18 @@ SIBLING_ACTIVE_THRESHOLD_KW = 1.0
 
 
 def is_wattspot_org(org: dict | None) -> bool:
-    """True if the given org is the Wattspot organization."""
-    return bool(org) and org.get("name", "").strip().lower() == "wattspot"
+    """
+    True if the given org is the Wattspot organization.
+    Uses a substring match rather than requiring an exact match — the
+    org's 'name' isn't sourced from Ampcontrol's own API, it's whatever
+    was typed into the AMPCONTROL_ORG_<n>_NAME env var in Render, so a
+    strict exact-match is fragile against any variation in how that was
+    typed (extra text, different spacing, etc.). None of the other
+    configured orgs (Aeversa, DP World, Rola Volvo Cars Somerset West,
+    Takealot Aeversa) contain "wattspot", so a substring match carries
+    no real false-positive risk here.
+    """
+    return bool(org) and "wattspot" in org.get("name", "").strip().lower()
 
 
 def is_charging_slow(power_kw: float | None, soc_percent: float | None,
