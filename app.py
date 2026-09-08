@@ -4,7 +4,7 @@ import time
 import requests
 import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
@@ -806,6 +806,86 @@ def get_connector_details(charger_uuid: str, network_id: str, org: dict) -> dict
         if connector_uuid is not None and connector_number is not None:
             details[connector_uuid] = {"number": connector_number, "max_capacity_kw": max_capacity}
     return details
+
+
+def get_active_charging_limit(charger_uuid: str, connector_number: int, org: dict) -> float | None:
+    """
+    Fetches Ampcontrol's currently active smart-charging / load-management
+    limit for a specific connector, in kW.
+    Endpoint: GET /v2/profiles/optimizations/?chargepoint={uuid}&start=...&end=...
+
+    This is the REAL constraint governing a session right now — separate
+    from, and can be much lower than, Current.Offered (from meter values).
+    Confirmed against real ground-truth data: a session showing
+    Current.Offered=270A was actually capped to 3.96kW by an active
+    load-sharing profile (method: "load_sharing_network_group") — the
+    charger/vehicle negotiation layer (Current.Offered) doesn't reflect
+    Ampcontrol's own smart-charging limits layered on top of it. Without
+    this check, a customer whose charger is being deliberately throttled
+    by Ampcontrol's own load management would incorrectly be told their
+    vehicle is choosing to charge slowly.
+
+    'active' is a genuine boolean on each record (not a string badge) —
+    confirmed against real data. Only records with active == true for
+    the matching connectorId are considered.
+
+    The applicable limit is resolved from the profile's own
+    chargingSchedulePeriod array (NOT the top-level 'profile.data' field,
+    whose exact resolution semantics for multi-stage schedules aren't
+    confirmed) — schedules can have multiple stages (e.g. a low limit for
+    the first few hours, stepping up later), so this finds elapsed time
+    since the profile's validFrom, then takes the LAST period whose
+    startPeriod <= elapsed. chargingRateUnit is read per-record rather
+    than assumed — converts W to kW when needed, same normalization
+    already used for Power.Active.Import.
+
+    Returns the active limit in kW, or None if no active profile is
+    found for this connector, or it can't be resolved.
+    """
+    if not org:
+        return None
+    now = datetime.now(timezone.utc)
+    start = (now - timedelta(minutes=10)).isoformat()
+    end = (now + timedelta(minutes=10)).isoformat()
+    data = ampcontrol_get(f"/profiles/optimizations/?chargepoint={charger_uuid}&start={start}&end={end}", org)
+    if not data or not data.get("data"):
+        return None
+
+    for record in data["data"]:
+        if not record.get("active"):
+            continue
+        if record.get("connectorId") != connector_number:
+            continue
+
+        cs_profile = record.get("csChargingProfiles", {}) or {}
+        schedule = cs_profile.get("chargingSchedule", {}) or {}
+        periods = schedule.get("chargingSchedulePeriod", [])
+        rate_unit = schedule.get("chargingRateUnit", "W")
+        valid_from_str = cs_profile.get("validFrom")
+        if not periods or not valid_from_str:
+            continue
+
+        try:
+            valid_from = datetime.fromisoformat(valid_from_str)
+        except ValueError:
+            continue
+
+        elapsed_secs = (now - valid_from).total_seconds()
+        applicable_limit = None
+        for period in sorted(periods, key=lambda p: p.get("startPeriod", 0)):
+            if period.get("startPeriod", 0) <= elapsed_secs:
+                applicable_limit = period.get("limit")
+        if applicable_limit is None:
+            continue
+
+        limit_kw = applicable_limit / 1000.0 if rate_unit == "W" else applicable_limit
+        log.info(
+            f"Charger {charger_uuid} connector {connector_number} (org '{org.get('name')}') → "
+            f"active charging limit: {limit_kw}kW (profile purpose: {cs_profile.get('chargingProfilePurpose')})"
+        )
+        return limit_kw
+
+    return None
 
 
 def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> list | None:
@@ -1829,7 +1909,7 @@ def is_wattspot_org(org: dict | None) -> bool:
 def is_charging_slow(power_kw: float | None, soc_percent: float | None,
                       current_a: float | None, current_offered_a: float | None,
                       max_capacity_kw: float | None, other_connector_active: bool,
-                      is_wattspot: bool) -> tuple:
+                      is_wattspot: bool, active_limit_kw: float | None = None) -> tuple:
     """
     Judges whether a charging session is genuinely running slow, using
     the same decision framework for every site (including Wattspot —
@@ -1837,18 +1917,27 @@ def is_charging_slow(power_kw: float | None, soc_percent: float | None,
 
     1. SoC >= SOC_TAPER_THRESHOLD → normal. Charging naturally tapers
        near a full battery; that's expected, not a fault.
-    2. Compare Current.Import (what the vehicle is drawing) against
+    2. If Ampcontrol has an active smart-charging/load-management limit
+       on this connector (active_limit_kw), and the session is delivering
+       close to that limit, it's normal — Ampcontrol's own system is
+       deliberately governing the rate. This is checked BEFORE the
+       Current.Offered comparison below, because we've confirmed with
+       real data that Current.Offered does NOT reflect an active
+       Ampcontrol limit — a session showing Current.Offered=270A was
+       actually capped to 3.96kW by an active load-sharing profile, which
+       would otherwise have been wrongly attributed to the vehicle.
+    3. Compare Current.Import (what the vehicle is drawing) against
        Current.Offered (what the charger is making available). If the
        vehicle is drawing meaningfully less than what's offered, the
        vehicle itself is the limiting factor (its own charging curve or
        BMS decision) — not the charger's fault, regardless of the
        absolute number.
-    3. Otherwise the vehicle is taking most/all of what's offered, so the
+    4. Otherwise the vehicle is taking most/all of what's offered, so the
        charger is the bottleneck — check whether what it's offering is
        itself a healthy amount: Wattspot sites compare against the fixed
        real-world ~20kW ceiling; every other site compares against that
        specific charger's own rated maxCapacity.
-    4. If step 3 comes back low, check whether another connector on the
+    5. If step 4 comes back low, check whether another connector on the
        same charger is also actively charging — a plausible sign of
        shared/dynamic load, not necessarily a fault. This does NOT
        resolve to "normal" (we can't confirm that from here) — it stays
@@ -1862,10 +1951,10 @@ def is_charging_slow(power_kw: float | None, soc_percent: float | None,
       meant for escalation notes (not shown verbatim to the customer —
       it's written for a human agent, not the driver).
     - reason_code: a short stable string identifying WHICH case fired
-      ("taper", "vehicle_limited", "healthy_max", "shared_load",
-      "genuinely_slow", "no_power_data", "no_max_data") — lets callers
-      build a tailored, driver-friendly explanation for the "normal"
-      cases without having to parse the agent-facing reason text.
+      ("taper", "smart_charging_active", "vehicle_limited", "healthy_max",
+      "shared_load", "genuinely_slow", "no_power_data", "no_max_data") —
+      lets callers build a tailored, driver-friendly explanation for the
+      "normal" cases without having to parse the agent-facing reason text.
     """
     if soc_percent is not None and soc_percent >= SOC_TAPER_THRESHOLD:
         return False, f"SoC at {soc_percent}% — natural taper near full, not a fault", "taper"
@@ -1873,7 +1962,20 @@ def is_charging_slow(power_kw: float | None, soc_percent: float | None,
     if power_kw is None:
         return None, "no live power reading available", "no_power_data"
 
-    # Step 2: is the vehicle the bottleneck?
+    # Step 2: is Ampcontrol itself actively governing this connector's rate?
+    # Checked before Current.Offered, which we've confirmed doesn't reflect
+    # this — Current.Offered can show a large figure even while an active
+    # profile is deliberately holding the real deliverable power far lower.
+    if active_limit_kw is not None and active_limit_kw > 0:
+        limit_ratio = power_kw / active_limit_kw
+        if limit_ratio >= VEHICLE_TAKING_OFFERED_RATIO:
+            return False, (
+                f"delivering {power_kw}kW against an active Ampcontrol limit of "
+                f"{active_limit_kw}kW ({limit_ratio:.0%}) — smart charging in "
+                "effect, not a fault"
+            ), "smart_charging_active"
+
+    # Step 3: is the vehicle the bottleneck?
     if current_a is not None and current_offered_a is not None and current_offered_a > 0:
         take_ratio = current_a / current_offered_a
         if take_ratio < VEHICLE_TAKING_OFFERED_RATIO:
@@ -1882,7 +1984,7 @@ def is_charging_slow(power_kw: float | None, soc_percent: float | None,
                 f"({take_ratio:.0%}) — vehicle-limited, not a charger fault"
             ), "vehicle_limited"
 
-    # Step 3: is what's being offered/delivered itself a healthy amount?
+    # Step 4: is what's being offered/delivered itself a healthy amount?
     if is_wattspot:
         threshold_kw = WATTSPOT_SLOW_THRESHOLD_KW
         threshold_desc = f"{WATTSPOT_SLOW_THRESHOLD_KW}kW (Wattspot real-world ceiling)"
@@ -1895,7 +1997,7 @@ def is_charging_slow(power_kw: float | None, soc_percent: float | None,
     if power_kw >= threshold_kw:
         return False, f"delivering {power_kw}kW, at/above the {threshold_desc} threshold", "healthy_max"
 
-    # Step 4: below threshold — check for a shared-load explanation
+    # Step 5: below threshold — check for a shared-load explanation
     if other_connector_active:
         return None, (
             f"delivering {power_kw}kW, below the {threshold_desc} threshold — but "
@@ -1956,6 +2058,13 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
             if r is not primary_reading
         )
 
+        # Is Ampcontrol itself actively governing this connector's rate
+        # right now? Checked ahead of Current.Offered, which we've
+        # confirmed doesn't reflect an active limit.
+        active_limit_kw = get_active_charging_limit(
+            charger_uuid, primary_reading.get("connector_id"), org
+        ) if org else None
+
         slow_verdict, verdict_reason, verdict_reason_code = is_charging_slow(
             primary_reading.get("power_kw"),
             primary_reading.get("soc_percent"),
@@ -1964,6 +2073,7 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
             primary_reading.get("max_capacity_kw"),
             other_connector_active,
             is_wattspot_org(org),
+            active_limit_kw,
         )
 
     if slow_verdict is False:
@@ -1989,6 +2099,14 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
                 f"Your battery is at *{soc}%*, so charging naturally slows down "
                 "as it tops up — that protects the battery and happens on every "
                 "EV, not just here."
+            )
+        elif verdict_reason_code == "smart_charging_active" and active_limit_kw:
+            explanation = (
+                f"Your site's smart charging system is currently managing this "
+                f"charger's speed — it's delivering *{power_kw}kW* against a "
+                f"planned limit of *{active_limit_kw}kW* for this connector right "
+                "now. This is intentional, not a fault, and the limit may adjust "
+                "automatically later in your session."
             )
         elif verdict_reason_code == "vehicle_limited" and current_a is not None and current_offered_a is not None:
             explanation = (
