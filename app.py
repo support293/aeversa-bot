@@ -857,12 +857,22 @@ def get_active_charging_limit(charger_uuid: str, connector_number: int, org: dic
     if not data or not data.get("data"):
         return None
 
-    for record in data["data"]:
+    # This endpoint's 'data' field may be a flat list (matching the other
+    # profiles/* endpoints), OR a dict wrapping the real list under an
+    # "optimizations" key. Confirmed via a real warning log where the
+    # exact string "optimizations" turned up as a bogus record — that's
+    # a dict key being iterated as if it were a list item, not random
+    # garbage. Handle both shapes rather than assuming one.
+    raw_data = data["data"]
+    if isinstance(raw_data, dict):
+        records = raw_data.get("optimizations", [])
+    elif isinstance(raw_data, list):
+        records = raw_data
+    else:
+        records = []
+
+    for record in records:
         if not isinstance(record, dict):
-            # Confirmed against a real 500 error: this endpoint's 'data'
-            # array can contain non-dict entries (a raw string was seen
-            # in practice) — skip rather than crash, but log what it
-            # actually was so the real cause can be tracked down.
             log.warning(f"Unexpected non-dict entry in /profiles/optimizations/ response for charger {charger_uuid}: {record!r}")
             continue
         if not record.get("active"):
