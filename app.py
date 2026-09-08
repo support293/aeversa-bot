@@ -110,7 +110,7 @@ MID_FLOW_STEPS = {
     "opt1_error_check", "opt1_try_another_charger", "opt1_other_charger_working",
     "opt1_confirm_unplugged",
     "opt2_power_on_site", "opt2_another_charger", "opt2_other_charger_works",
-    "opt2_which_connector", "slow_charging_normal_followup",
+    "opt2_which_connector", "slow_charging_normal_followup", "slow_charging_no_session_followup",
     "opt3_restart_session", "opt3_still_slow", "opt3_wattspot_wifi",
     "opt3_wattspot_replug", "opt3_other_4g", "opt3_other_final_restart",
     "await_restart_result",
@@ -771,7 +771,7 @@ def get_connector_details(charger_uuid: str, network_id: str, org: dict) -> dict
     """
     Fetches per-connector details for every connector on a charger, keyed
     by connector UUID: friendly number, rated max capacity (kW), voltage,
-    and current type (AC/DC).
+    current type (AC/DC), and live OCPP status.
     Endpoint: GET /v2/connectors/?network={uuid}&chargepoint={uuid}
 
     Confirmed via docs: the response's 'connectorId' field is the
@@ -794,11 +794,15 @@ def get_connector_details(charger_uuid: str, network_id: str, org: dict) -> dict
     possible sign of a cable/hardware constraint separate from an active
     Ampcontrol software limit.
 
+    ocpp_status ("Charging", "Available", etc. — confirmed real values
+    seen in practice) lets a caller check whether a connector actually
+    has an active session before running slow-charging diagnostics on it.
+
     Returns {connector_uuid: {"number": int, "max_capacity_kw": float|None,
-    "voltage": float|None, "current_type": str|None}}. Returns an empty
-    dict on any failure, so callers can gracefully fall back (e.g.
-    showing the raw UUID, or skipping the slow/normal judgment) rather
-    than breaking.
+    "voltage": float|None, "current_type": str|None, "ocpp_status": str|None}}.
+    Returns an empty dict on any failure, so callers can gracefully fall
+    back (e.g. showing the raw UUID, or skipping the slow/normal
+    judgment) rather than breaking.
     """
     if not org:
         return {}
@@ -815,10 +819,12 @@ def get_connector_details(charger_uuid: str, network_id: str, org: dict) -> dict
         max_capacity = connector.get("maxCapacity")
         voltage = connector.get("voltage")
         current_type = connector.get("currentType")
+        ocpp_status = connector.get("ocppStatus")
         if connector_uuid is not None and connector_number is not None:
             details[connector_uuid] = {
                 "number": connector_number, "max_capacity_kw": max_capacity,
                 "voltage": voltage, "current_type": current_type,
+                "ocpp_status": ocpp_status,
             }
     return details
 
@@ -988,7 +994,7 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
             "connector_id": connector_id,
             "current_a": None, "power_kw": None, "soc_percent": None,
             "current_offered_a": None, "max_capacity_kw": None,
-            "voltage": None, "current_type": None,
+            "voltage": None, "current_type": None, "ocpp_status": None,
             "current_timestamp": None, "power_timestamp": None, "soc_timestamp": None,
             "current_offered_timestamp": None,
         })
@@ -1061,6 +1067,7 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
             r["max_capacity_kw"] = details.get("max_capacity_kw")
             r["voltage"] = details.get("voltage")
             r["current_type"] = details.get("current_type")
+            r["ocpp_status"] = details.get("ocpp_status")
             if details.get("number") is not None:
                 r["connector_id"] = details["number"]
 
@@ -2163,6 +2170,34 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
     active_limit_kw = None
     if meter_readings and len(meter_readings) == 1:
         primary_reading = meter_readings[0]
+
+        # Is there actually an active charging session on this connector
+        # at all? If not, none of the slow-vs-normal diagnostics below are
+        # meaningful — tell the customer directly rather than escalating,
+        # per the meeting decision that a missing session shouldn't
+        # auto-escalate to an agent. Only "Charging" is treated as an
+        # active session — every other confirmed real value we've seen
+        # ("Available", etc.) means no vehicle is actively charging here.
+        ocpp_status = primary_reading.get("ocpp_status")
+        if ocpp_status and ocpp_status != "Charging":
+            user_states[user_id] = {
+                "step": "slow_charging_no_session_followup",
+                "charger_uuid": state.get("charger_uuid"),
+                "charger_id": state.get("charger_id"),
+                "charger_name": state.get("charger_name"),
+                "network_id": state.get("network_id"),
+                "org_index": state.get("org_index"),
+                "site": state.get("site"),
+                "fault_type": state.get("fault_type", "Slow charging"),
+                "slow_charging_description": description,
+                "connector_number": connector_number,
+            }
+            return (
+                f"I don't see an active charging session on Connector "
+                f"{primary_reading.get('connector_id', connector_number)} right "
+                "now. 🔌\n\nCould you check that your vehicle is properly plugged "
+                "in? Once it's charging, just let me know and I'll take another look."
+            )
 
         # Is any OTHER connector on this same charger actively charging
         # right now? A plausible sign of shared/dynamic load.
@@ -3302,6 +3337,14 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return escalate_slow_charging(user_id, state, description)
         user_states[user_id] = {**state, "step": "opt2_which_connector", "connector_retries": retries}
         return f"Sorry, I didn't quite catch that! 😊\n\n{CONNECTOR_QUESTION}"
+
+    # ── Slow charging — no active session was found, customer replied ────────
+    if step == "slow_charging_no_session_followup":
+        description = state.get("slow_charging_description", "")
+        connector_number = state.get("connector_number")
+        # Genuinely re-check rather than just re-showing the same message —
+        # whatever they replied, take it as "I've checked, please look again"
+        return escalate_slow_charging(user_id, state, description, connector_number=connector_number)
 
     # ── Slow charging — after telling the customer the reading looks normal ──
     if step == "slow_charging_normal_followup":
