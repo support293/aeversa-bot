@@ -4,6 +4,7 @@ import time
 import requests
 import threading
 import logging
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
@@ -845,8 +846,13 @@ def get_active_charging_limit(charger_uuid: str, connector_number: int, org: dic
     if not org:
         return None
     now = datetime.now(timezone.utc)
-    start = (now - timedelta(minutes=10)).isoformat()
-    end = (now + timedelta(minutes=10)).isoformat()
+    # URL-encode these — a raw '+' in the UTC offset (e.g. "+00:00") gets
+    # misinterpreted as a space by query-string parsing otherwise,
+    # producing an invalid timestamp server-side (confirmed via a real
+    # 422 error: "Invalid isoformat string: '...52.184689 00:00'" — note
+    # the space where '+' should be).
+    start = urllib.parse.quote((now - timedelta(minutes=10)).isoformat())
+    end = urllib.parse.quote((now + timedelta(minutes=10)).isoformat())
     data = ampcontrol_get(f"/profiles/optimizations/?chargepoint={charger_uuid}&start={start}&end={end}", org, timeout=15)
     if not data or not data.get("data"):
         return None
@@ -2126,19 +2132,32 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
                 "now. This is completely normal — vehicles often manage their "
                 "own charging speed for battery health."
             )
-        elif verdict_reason_code == "healthy_max" and max_capacity_kw:
-            if power_kw is not None and power_kw >= max_capacity_kw:
+        elif verdict_reason_code == "healthy_max":
+            if is_wattspot_org(org):
+                # Judged against WATTSPOT_SLOW_THRESHOLD_KW internally, but
+                # the real achievable ceiling worth telling the customer
+                # about is WATTSPOT_MAX_KW — max_capacity_kw (the charger's
+                # own hardware rating) was never actually part of this
+                # decision for a Wattspot session, so don't reference it.
+                explanation = (
+                    f"You're delivering *{power_kw}kW*, which is close to the "
+                    f"typical maximum of *{WATTSPOT_MAX_KW}kW* achievable at this "
+                    "site — you're getting essentially full speed here."
+                )
+            elif max_capacity_kw and power_kw is not None and power_kw >= max_capacity_kw:
                 explanation = (
                     f"You're delivering *{power_kw}kW*, which meets or exceeds this "
                     f"connector's typical rating of *{max_capacity_kw}kW* — you're "
                     "getting full speed here."
                 )
-            else:
+            elif max_capacity_kw:
                 explanation = (
                     f"You're delivering *{power_kw}kW*, which is close to this "
                     f"connector's maximum of *{max_capacity_kw}kW* — you're getting "
                     "essentially full speed here."
                 )
+            else:
+                explanation = f"It's currently delivering *{power_kw}kW*{soc_note}, which looks normal."
         else:
             explanation = f"It's currently delivering *{power_kw}kW*{soc_note}, which looks normal."
 
