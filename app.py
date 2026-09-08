@@ -770,7 +770,8 @@ def get_charger_alerts(charger_uuid: str, network_id: str, org: dict) -> list:
 def get_connector_details(charger_uuid: str, network_id: str, org: dict) -> dict:
     """
     Fetches per-connector details for every connector on a charger, keyed
-    by connector UUID: friendly number and rated max capacity (kW).
+    by connector UUID: friendly number, rated max capacity (kW), voltage,
+    and current type (AC/DC).
     Endpoint: GET /v2/connectors/?network={uuid}&chargepoint={uuid}
 
     Confirmed via docs: the response's 'connectorId' field is the
@@ -786,10 +787,18 @@ def get_connector_details(charger_uuid: str, network_id: str, org: dict) -> dict
     connector objects, which didn't reconcile with independently-known
     real current/power readings and aren't used here.
 
-    Returns {connector_uuid: {"number": int, "max_capacity_kw": float|None}}.
-    Returns an empty dict on any failure, so callers can gracefully fall
-    back (e.g. showing the raw UUID, or skipping the slow/normal
-    judgment) rather than breaking.
+    voltage and current_type support a secondary diagnostic check:
+    converting maxCapacity into a theoretical max Amps figure (Power =
+    Voltage x Current, only reliable for DC — AC would need phase-count
+    info we don't have) to compare against Current.Offered, as a
+    possible sign of a cable/hardware constraint separate from an active
+    Ampcontrol software limit.
+
+    Returns {connector_uuid: {"number": int, "max_capacity_kw": float|None,
+    "voltage": float|None, "current_type": str|None}}. Returns an empty
+    dict on any failure, so callers can gracefully fall back (e.g.
+    showing the raw UUID, or skipping the slow/normal judgment) rather
+    than breaking.
     """
     if not org:
         return {}
@@ -804,8 +813,13 @@ def get_connector_details(charger_uuid: str, network_id: str, org: dict) -> dict
         connector_uuid = connector.get("id")
         connector_number = connector.get("connectorId")
         max_capacity = connector.get("maxCapacity")
+        voltage = connector.get("voltage")
+        current_type = connector.get("currentType")
         if connector_uuid is not None and connector_number is not None:
-            details[connector_uuid] = {"number": connector_number, "max_capacity_kw": max_capacity}
+            details[connector_uuid] = {
+                "number": connector_number, "max_capacity_kw": max_capacity,
+                "voltage": voltage, "current_type": current_type,
+            }
     return details
 
 
@@ -974,6 +988,7 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
             "connector_id": connector_id,
             "current_a": None, "power_kw": None, "soc_percent": None,
             "current_offered_a": None, "max_capacity_kw": None,
+            "voltage": None, "current_type": None,
             "current_timestamp": None, "power_timestamp": None, "soc_timestamp": None,
             "current_offered_timestamp": None,
         })
@@ -1036,14 +1051,16 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
         return None
 
     # Swap raw connector UUIDs for the friendly dashboard number (e.g. "1",
-    # "2") and attach each connector's rated max capacity — falls back to
-    # the raw UUID / None respectively for any connector not found, rather
-    # than dropping the reading.
+    # "2") and attach each connector's rated max capacity, voltage, and
+    # current type — falls back to the raw UUID / None respectively for
+    # any connector not found, rather than dropping the reading.
     connector_details = get_connector_details(charger_uuid, network_id, org)
     for r in readings:
         details = connector_details.get(r["connector_id"])
         if details:
             r["max_capacity_kw"] = details.get("max_capacity_kw")
+            r["voltage"] = details.get("voltage")
+            r["current_type"] = details.get("current_type")
             if details.get("number") is not None:
                 r["connector_id"] = details["number"]
 
@@ -1947,6 +1964,61 @@ def is_wattspot_org(org: dict | None) -> bool:
     return bool(org) and "wattspot" in org.get("name", "").strip().lower()
 
 
+# If Current.Offered is below this fraction of a connector's own
+# theoretical max Amps (derived from its rated kW and voltage), it's
+# worth flagging as a possible cable/hardware constraint — separate from,
+# and only checked when there's no already-confirmed active Ampcontrol
+# software limit explaining it.
+CABLE_CONSTRAINT_RATIO = 0.7
+
+
+def check_possible_hardware_constraint(current_offered_a: float | None, max_capacity_kw: float | None,
+                                        voltage: float | None, current_type: str | None,
+                                        active_limit_kw: float | None) -> str:
+    """
+    Checks whether Current.Offered is notably below what this connector's
+    own rated max capacity would theoretically support at its voltage —
+    a possible sign of a cable or physical hardware constraint, distinct
+    from an active Ampcontrol software limit (which is already checked
+    and explained separately). Does NOT change the slow/normal verdict —
+    this is purely additional diagnostic context for an escalation note,
+    since it can't be confirmed from here, only flagged as worth a human
+    checking.
+
+    Only computed for DC connectors: Power = Voltage x Current only
+    reliably converts to a max-Amp figure this simply for DC — AC would
+    need phase-count information we don't have, so AC connectors are
+    skipped entirely rather than risk a wrong number.
+
+    Skipped entirely if an active Ampcontrol limit was already found —
+    in that case the low offered current already has a confirmed
+    explanation, and a cable/hardware note would be redundant at best,
+    misleading at worst.
+
+    Returns a short note for escalation notes, or "" if not applicable.
+    """
+    if active_limit_kw is not None:
+        return ""
+    if current_type != "DC":
+        return ""
+    if not current_offered_a or not max_capacity_kw or not voltage or voltage <= 0:
+        return ""
+
+    theoretical_max_a = (max_capacity_kw * 1000) / voltage
+    if theoretical_max_a <= 0:
+        return ""
+
+    ratio = current_offered_a / theoretical_max_a
+    if ratio < CABLE_CONSTRAINT_RATIO:
+        return (
+            f"Note: charger is offering {current_offered_a}A, notably below this "
+            f"connector's theoretical max of ~{theoretical_max_a:.0f}A (at "
+            f"{max_capacity_kw}kW/{voltage}V) — possible cable or hardware "
+            "constraint, not confirmed."
+        )
+    return ""
+
+
 def is_charging_slow(power_kw: float | None, soc_percent: float | None,
                       current_a: float | None, current_offered_a: float | None,
                       max_capacity_kw: float | None, other_connector_active: bool,
@@ -2088,6 +2160,7 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
     verdict_reason = ""
     verdict_reason_code = ""
     primary_reading = None
+    active_limit_kw = None
     if meter_readings and len(meter_readings) == 1:
         primary_reading = meter_readings[0]
 
@@ -2223,8 +2296,17 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
     meter_note = format_meter_values_for_agent(meter_readings)
     connector_note = f"Customer reports charging on Connector {connector_number}." if connector_number is not None else ""
     verdict_note = f"Bot check: {verdict_reason}." if verdict_reason else ""
+    hardware_note = ""
+    if primary_reading is not None:
+        hardware_note = check_possible_hardware_constraint(
+            primary_reading.get("current_offered_a"),
+            primary_reading.get("max_capacity_kw"),
+            primary_reading.get("voltage"),
+            primary_reading.get("current_type"),
+            active_limit_kw,
+        )
 
-    notes_parts = [n for n in [description, connector_note, verdict_note, meter_note] if n]
+    notes_parts = [n for n in [description, connector_note, verdict_note, hardware_note, meter_note] if n]
     combined_notes = "\n".join(notes_parts)
 
     escalate_state = {**state, "fault_type": "Slow charging"}
