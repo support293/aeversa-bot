@@ -582,7 +582,7 @@ def get_ampcontrol_token(org: dict) -> str:
             return ""
 
 
-def ampcontrol_get(endpoint: str, org: dict) -> dict | None:
+def ampcontrol_get(endpoint: str, org: dict, timeout: int = 10) -> dict | None:
     """Makes an authenticated GET request to Ampcontrol API for a specific org."""
     token = get_ampcontrol_token(org)
     if not token:
@@ -594,7 +594,7 @@ def ampcontrol_get(endpoint: str, org: dict) -> dict | None:
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json"
             },
-            timeout=10
+            timeout=timeout
         )
         response.raise_for_status()
         return response.json()
@@ -847,7 +847,7 @@ def get_active_charging_limit(charger_uuid: str, connector_number: int, org: dic
     now = datetime.now(timezone.utc)
     start = (now - timedelta(minutes=10)).isoformat()
     end = (now + timedelta(minutes=10)).isoformat()
-    data = ampcontrol_get(f"/profiles/optimizations/?chargepoint={charger_uuid}&start={start}&end={end}", org)
+    data = ampcontrol_get(f"/profiles/optimizations/?chargepoint={charger_uuid}&start={start}&end={end}", org, timeout=15)
     if not data or not data.get("data"):
         return None
 
@@ -939,7 +939,7 @@ def get_charger_meter_values(charger_uuid: str, network_id: str, org: dict) -> l
         log.warning(f"No network_id available for charger {charger_uuid} — skipping meter value check")
         return None
 
-    data = ampcontrol_get(f"/meter_values/?network={resolved_network_id}&charger={charger_uuid}", org)
+    data = ampcontrol_get(f"/meter_values/?network={resolved_network_id}&charger={charger_uuid}", org, timeout=15)
     if not data or not data.get("data"):
         return None
 
