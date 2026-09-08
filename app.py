@@ -2672,48 +2672,63 @@ def lookup_charger_and_respond(user_id: str, state: dict,
         "site":          state.get("site") or charger.get("network_name", ""),
     }
 
-    if charger["online"] is True:
-        active_alerts = get_charger_alerts(charger_uuid, base_state.get("network_id", ""), matched_org) if matched_org else []
-        if active_alerts:
-            alert_summary = format_alerts_for_agent(active_alerts)
-            if any(is_emergency_stop_alert(a) for a in active_alerts):
-                user_states[user_id] = {**base_state, "step": "emergency_stop_check",
-                                         "fault_type": "Possible emergency stop pressed",
-                                         "extra_notes": alert_summary}
-                return (
-                    f"I can see that you are at charger, *{friendly_name}*, and it's "
-                    "online — but it looks like the *emergency stop* button may have "
-                    "been pressed on this charger. 🛑\n\n"
-                    "Could you please check the charger for a red emergency stop "
-                    "button, and if it's pressed in, twist or pull it to release it? "
-                    "🎥 See the video below for how.\n\n"
-                    "Reply *YES* once you've released it, or *NO* if you can't find one.",
-                    get_media("video_emergency_stop")
-                )
-            if any(is_invalid_id_tag_alert(a) for a in active_alerts):
-                escalate_state = {**base_state, "fault_type": "Invalid vehicle ID tag",
-                                   "extra_notes": alert_summary}
-                return (
-                    start_escalation(
-                        user_id, escalate_state,
-                        f"I can see that you are at charger, *{friendly_name}*. Your "
-                        "*Vehicle ID Tag* doesn't seem to be registered to charge on "
-                        "this system. 🪪\n\n"
-                        "I'm putting you in touch with our support team who can help "
-                        "get this sorted."
-                    ),
-                    None
-                )
-            escalate_state = {**base_state, "fault_type": "Active charger alert",
+    # Check alerts BEFORE branching on online/offline status — a charger
+    # can be offline BECAUSE of a fault (e.g. an emergency stop or a
+    # FAULTED alert), and checking alerts first lets us surface that real
+    # reason instead of a generic "it's offline" message that hides it.
+    active_alerts = get_charger_alerts(charger_uuid, base_state.get("network_id", ""), matched_org) if matched_org else []
+    if active_alerts:
+        alert_summary = format_alerts_for_agent(active_alerts)
+        # Wording reflects actual connectivity rather than assuming
+        # online, since this now also fires for offline chargers.
+        if charger["online"] is True:
+            status_phrase = "and it's online"
+        elif charger["online"] is False:
+            status_phrase = "and it currently appears offline"
+        else:
+            status_phrase = "though I couldn't fully confirm its live status"
+
+        if any(is_emergency_stop_alert(a) for a in active_alerts):
+            user_states[user_id] = {**base_state, "step": "emergency_stop_check",
+                                     "fault_type": "Possible emergency stop pressed",
+                                     "extra_notes": alert_summary}
+            return (
+                f"I can see that you are at charger, *{friendly_name}*, {status_phrase} "
+                "— but it looks like the *emergency stop* button may have "
+                "been pressed on this charger. 🛑\n\n"
+                "Could you please check the charger for a red emergency stop "
+                "button, and if it's pressed in, twist or pull it to release it? "
+                "🎥 See the video below for how.\n\n"
+                "Reply *YES* once you've released it, or *NO* if you can't find one.",
+                get_media("video_emergency_stop")
+            )
+        if any(is_invalid_id_tag_alert(a) for a in active_alerts):
+            escalate_state = {**base_state, "fault_type": "Invalid vehicle ID tag",
                                "extra_notes": alert_summary}
             return (
                 start_escalation(
                     user_id, escalate_state,
-                    f"I can see that you are at charger, *{friendly_name}*, and it's "
-                    "online — but there's an active alert flagged on it. 🔎"
+                    f"I can see that you are at charger, *{friendly_name}*. Your "
+                    "*Vehicle ID Tag* doesn't seem to be registered to charge on "
+                    "this system. 🪪\n\n"
+                    "I'm putting you in touch with our support team who can help "
+                    "get this sorted."
                 ),
                 None
             )
+        escalate_state = {**base_state, "fault_type": "Active charger alert",
+                           "extra_notes": alert_summary}
+        return (
+            start_escalation(
+                user_id, escalate_state,
+                f"I can see that you are at charger, *{friendly_name}*, {status_phrase} "
+                "— but there's an active alert flagged on it. 🔎"
+            ),
+            None
+        )
+
+    # No alerts found — fall back to plain online/offline handling
+    if charger["online"] is True:
         user_states[user_id] = {**base_state, "step": "issue_menu"}
         return (issue_menu(friendly_name, confirmed_online=True), None)
 
