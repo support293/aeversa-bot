@@ -2365,11 +2365,10 @@ def escalate_slow_charging(user_id: str, state: dict, description: str = "", con
             )
         elif verdict_reason_code == "vehicle_limited" and current_a is not None and current_offered_a is not None:
             explanation = (
-                f"Good news — this charger has plenty of power available (up to "
-                f"*{current_offered_a}A*), and your vehicle is currently charging "
-                f"at *{current_a}A*, which is exactly what it's asking for right "
-                "now. This is completely normal — vehicles often manage their "
-                "own charging speed for battery health."
+                f"Good news — your vehicle is charging at *{current_a}A* out of "
+                f"the *{current_offered_a}A* available, which is exactly what "
+                "it's requesting. This is your vehicle managing its own speed "
+                "for battery health, not a charger issue."
             )
         elif verdict_reason_code == "healthy_max":
             if is_wattspot_org(org):
