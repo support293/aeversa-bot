@@ -858,6 +858,13 @@ def get_active_charging_limit(charger_uuid: str, connector_number: int, org: dic
         return None
 
     for record in data["data"]:
+        if not isinstance(record, dict):
+            # Confirmed against a real 500 error: this endpoint's 'data'
+            # array can contain non-dict entries (a raw string was seen
+            # in practice) — skip rather than crash, but log what it
+            # actually was so the real cause can be tracked down.
+            log.warning(f"Unexpected non-dict entry in /profiles/optimizations/ response for charger {charger_uuid}: {record!r}")
+            continue
         if not record.get("active"):
             continue
         if record.get("connectorId") != connector_number:
