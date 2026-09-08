@@ -3204,14 +3204,14 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
                 "the charger, an error message, nothing happens when you plug in, etc.)"
             )
         elif msg == "2":
-            # Slow charging — get a description first, THEN stop/unplug/restart/poll
-            user_states[user_id] = {**state, "step": "opt2_awaiting_description",
-                                     "fault_type": "Slow charging"}
-            return (
-                "🐢 Sorry to hear that!\n\n"
-                "Can you briefly describe what's happening? (e.g. how slow it is, "
-                "when it started, any error messages, etc.)"
-            )
+            # Slow charging — the report IS the issue, no need to ask for more
+            # detail before checking the actual data. Goes straight to which
+            # connector, matching how the free-text ("it's slow") path already
+            # behaves.
+            user_states[user_id] = {**state, "step": "opt2_which_connector",
+                                     "fault_type": "Slow charging",
+                                     "slow_charging_description": ""}
+            return f"🐢 Sorry to hear that you're charging slowly!\n\n{CONNECTOR_QUESTION}"
         elif msg == "3":
             user_states[user_id] = {**state, "step": "something_else",
                                      "fault_type": "Other issue"}
@@ -3276,7 +3276,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             elif intent == "slow_charging":
                 user_states[user_id] = {**state, "step": "opt2_which_connector",
                                          "slow_charging_description": msg_raw.strip()}
-                return f"🐢 Sorry to hear that!\n\n{CONNECTOR_QUESTION}"
+                return f"🐢 Sorry to hear that you're charging slowly!\n\n{CONNECTOR_QUESTION}"
             elif intent == "agent":
                 return start_escalation(user_id, state)
             elif intent == "general":
@@ -3426,13 +3426,6 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
             return no_fn()
         else:
             return smart_yes_no(user_id, state, msg_raw, QUESTION, yes_fn, no_fn)
-
-    # ── Slow charging — capturing the customer's description ─────────────────
-    if step == "opt2_awaiting_description":
-        description = msg_raw.strip()
-        user_states[user_id] = {**state, "step": "opt2_which_connector",
-                                 "slow_charging_description": description}
-        return f"Thanks for letting me know! 📋\n\n{CONNECTOR_QUESTION}"
 
     # ── Slow charging — waiting for customer to say which connector ──────────
     if step == "opt2_which_connector":
