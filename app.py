@@ -3342,7 +3342,7 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         else:
             return (
                 "Just let me know once you've *unplugged the cable* from your "
-                "vehicle — you can reply with a 👍, or just tell me when you're done."
+                "vehicle — you can reply with a 👍 or *done*."
             )
 
     # ── Vehicle not charging — restart in progress, polling in the background ─
