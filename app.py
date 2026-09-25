@@ -31,9 +31,14 @@ TWILIO_AUTH_TOKEN    = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_WA_NUMBER     = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
 
 # Email configuration — set RESEND_API_KEY in Render environment variables
-RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-SUPPORT_EMAIL  = "support@aeversa.com"
-FROM_EMAIL     = "AE Support Bot <onboarding@resend.dev>"
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
+SUPPORT_EMAIL  = os.environ.get("SUPPORT_EMAIL", "support@aeversa.com")
+FROM_EMAIL     = os.environ.get("FROM_EMAIL", "AcE Support <ace@aeversa.com>")
+
+if not RESEND_API_KEY:
+    log.error("❌ RESEND_API_KEY not set — escalation EMAILS WILL NOT SEND")
+else:
+    log.info(f"📧 Email configured | from: {FROM_EMAIL} | to: {SUPPORT_EMAIL}")
 
 # ── Ampcontrol Configuration ──────────────────────────────────────────────────
 # Multi-organization support: Aeversa has separate Ampcontrol Service
@@ -193,7 +198,8 @@ def _send_email_worker(customer_number: str, fault_type: str,
                 ("⚠️  Fault Type", fault_type or "Not specified")]
         if site:        rows.append(("📍 Site", site))
         if charger_id:
-            charger_name_display = state.get("charger_name", "") if state else ""
+            user_state = user_states.get(f"whatsapp:{customer_number}", {})
+            charger_name_display = user_state.get("charger_name", "")
             display = charger_name_display if charger_name_display and charger_name_display != "Unknown" else charger_id
             rows.append(("🔌 Charger", display))
         if error_code:  rows.append(("🔴 Error Code", error_code))
@@ -257,9 +263,21 @@ def _send_email_worker(customer_number: str, fault_type: str,
             log.info(f"✅ Escalation email sent to {SUPPORT_EMAIL}")
         else:
             log.error(f"❌ Resend API error {response.status_code}: {response.text}")
+            _alert_agents_email_failed(customer_number,
+                                       f"Resend error {response.status_code}")
 
     except Exception as e:
         log.error(f"❌ Failed to send escalation email: {e}")
+        _alert_agents_email_failed(customer_number, str(e)[:200])
+
+
+def _alert_agents_email_failed(customer_number: str, reason: str):
+    """WhatsApps every agent when an escalation email fails, so it never fails silently."""
+    msg = (f"⚠️ AcE: escalation EMAIL FAILED for customer {customer_number}.\n"
+           f"Reason: {reason}\n"
+           f"Please pick this customer up on WhatsApp and check the Render logs.")
+    for agent_wa in AGENT_NUMBERS:
+        send_whatsapp_message(agent_wa, msg)
 
 
 def send_escalation_email(customer_number: str, fault_type: str,
@@ -267,7 +285,8 @@ def send_escalation_email(customer_number: str, fault_type: str,
                           error_code: str = None, extra_notes: str = None):
     """Fires the email in a background thread so it never blocks the webhook."""
     if not RESEND_API_KEY:
-        log.warning("Email not configured — RESEND_API_KEY missing from environment")
+        log.error("❌ Escalation email NOT sent — RESEND_API_KEY missing from environment")
+        _alert_agents_email_failed(customer_number, "RESEND_API_KEY not set on Render")
         return
     thread = threading.Thread(
         target=_send_email_worker,
