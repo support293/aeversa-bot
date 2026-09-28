@@ -322,6 +322,7 @@ def check_session_timeouts():
     - 10 minutes mid-flow → notify agents + send customer reminder
     - 2 hours any session → reset session + send fresh greeting to customer
     """
+    metrics_sweep()
     now = datetime.now().timestamp()
     for user_id, state in list(user_states.items()):
 
@@ -395,6 +396,8 @@ def start_timeout_checker():
 
 def notify_agents(customer_number: str, state: dict):
     """Sends WhatsApp notification to all agents when an escalation happens."""
+    metrics_on_notify(customer_number, state)
+
     def _notify():
         if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
             log.warning("Twilio credentials not set — agent WhatsApp notification skipped")
@@ -1738,6 +1741,484 @@ SALES_INFO = KNOWLEDGE_BASE.get("company_info", {}).get("sales_contact", {})
 
 # ── Session State ─────────────────────────────────────────────────────────────
 user_states = {}
+
+# ── Conversation Metrics + Dashboard ──────────────────────────────────────────
+# One row per FINISHED conversation (resolved / escalated / went quiet), so we
+# can measure whether AcE resolves issues before they reach a human.
+#
+# Storage: Postgres if DATABASE_URL is set (durable), otherwise a local SQLite
+# file (Render wipes that on every deploy unless a persistent disk is attached).
+# Every row is ALSO written to the log as "📊 METRIC {json}" as a backup.
+# Customer numbers are never stored — only a salted hash + the last 4 digits.
+# Nothing in here can break the bot: every hook is wrapped in try/except.
+import sqlite3
+import hashlib
+import hmac
+import html
+import csv
+import io
+import statistics
+from flask import Response
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
+
+DATABASE_URL       = os.environ.get("DATABASE_URL", "")
+METRICS_DB_PATH    = os.environ.get("METRICS_DB_PATH", "ace_metrics.db")
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
+METRICS_SALT       = os.environ.get("METRICS_SALT", "aeversa-ace")
+SAST               = timezone(timedelta(hours=2))   # South Africa, no DST
+_USE_PG            = bool(DATABASE_URL and psycopg2)
+
+_active: dict = {}                    # user_id -> conversation currently in progress
+_active_lock     = threading.Lock()
+_db_write_lock   = threading.Lock()
+
+_METRIC_COLS = ["started_at", "ended_at", "outcome", "customer_hash", "customer_tail",
+                "charger", "site", "fault_type", "error_code", "reason", "messages", "stalled"]
+
+
+def _metrics_conn():
+    if _USE_PG:
+        return psycopg2.connect(DATABASE_URL, connect_timeout=5)
+    return sqlite3.connect(METRICS_DB_PATH, timeout=10)
+
+
+def _q(sql: str) -> str:
+    """SQLite uses ? placeholders, Postgres uses %s."""
+    return sql.replace("?", "%s") if _USE_PG else sql
+
+
+def metrics_init():
+    if DATABASE_URL and not psycopg2:
+        log.error("❌ DATABASE_URL is set but psycopg2 is not installed — add "
+                  "psycopg2-binary to requirements.txt. Falling back to SQLite "
+                  "(history is lost on every redeploy).")
+    pk  = "BIGSERIAL PRIMARY KEY" if _USE_PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    num = "DOUBLE PRECISION" if _USE_PG else "REAL"
+    conn = None
+    try:
+        conn = _metrics_conn()
+        cur = conn.cursor()
+        cur.execute(f"""CREATE TABLE IF NOT EXISTS ace_conversations (
+            id {pk},
+            started_at {num} NOT NULL,
+            ended_at {num} NOT NULL,
+            outcome TEXT NOT NULL,
+            customer_hash TEXT, customer_tail TEXT,
+            charger TEXT, site TEXT, fault_type TEXT, error_code TEXT,
+            reason TEXT, messages INTEGER, stalled INTEGER)""")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ace_conv_ended ON ace_conversations (ended_at)")
+        conn.commit()
+        where = "Postgres" if _USE_PG else f"SQLite file '{METRICS_DB_PATH}' (NOT durable on Render)"
+        log.info(f"📊 Metrics storage ready: {where}")
+    except Exception as e:
+        log.error(f"❌ Metrics storage unavailable: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def _new_conv(user_id: str, now: float) -> dict:
+    digits = user_id.replace("whatsapp:", "")
+    return {
+        "started": now, "last_seen": now, "msgs": 0, "stalled": False,
+        "charger": "", "site": "", "fault_type": "", "error_code": "",
+        "cust_hash": hashlib.sha256((METRICS_SALT + digits).encode()).hexdigest()[:12],
+        "cust_tail": digits[-4:],
+    }
+
+
+def _merge_state(conv: dict, state: dict):
+    """Copies whatever the bot knows so far (charger, site, fault) onto the conversation."""
+    if not state:
+        return
+    name = state.get("charger_name")
+    cid  = state.get("charger_id") or state.get("charger_uuid")
+    charger = name if name and name != "Unknown" else (cid if cid and cid != "Unknown" else "")
+    for key, val in (("charger", charger), ("site", state.get("site")),
+                     ("fault_type", state.get("fault_type")),
+                     ("error_code", state.get("error_code"))):
+        if val and val != "Unknown":
+            conv[key] = str(val)[:120]
+
+
+def _record(conv: dict, outcome: str, ended_at: float = None, reason: str = ""):
+    ended_at = ended_at or time.time()
+    reason   = (reason or "")[:300]
+    row = (conv["started"], ended_at, outcome, conv["cust_hash"], conv["cust_tail"],
+           conv["charger"], conv["site"], conv["fault_type"], conv["error_code"],
+           reason, conv["msgs"], 1 if conv["stalled"] else 0)
+    log.info("📊 METRIC " + json.dumps({
+        "outcome": outcome, "charger": conv["charger"], "site": conv["site"],
+        "fault": conv["fault_type"], "msgs": conv["msgs"], "stalled": conv["stalled"],
+        "secs": int(ended_at - conv["started"]), "customer": conv["cust_tail"],
+        "reason": reason}, ensure_ascii=False))
+
+    def _write():
+        conn = None
+        try:
+            with _db_write_lock:
+                conn = _metrics_conn()
+                cur = conn.cursor()
+                cur.execute(_q(
+                    "INSERT INTO ace_conversations (" + ", ".join(_METRIC_COLS) + ") "
+                    "VALUES (" + ", ".join(["?"] * len(_METRIC_COLS)) + ")"), row)
+                conn.commit()
+        except Exception as e:
+            log.error(f"❌ Could not save conversation metric: {e}")
+        finally:
+            if conn:
+                conn.close()
+
+    threading.Thread(target=_write, daemon=True).start()
+
+
+def metrics_open(user_id: str):
+    """Call for every customer message, BEFORE the bot handles it."""
+    try:
+        now, stale = time.time(), None
+        with _active_lock:
+            conv = _active.get(user_id)
+            if conv and now - conv["last_seen"] > SESSION_RESET_SECS:
+                stale = _active.pop(user_id)
+                conv = None
+            if conv is None:
+                conv = _new_conv(user_id, now)
+                _active[user_id] = conv
+            _merge_state(conv, user_states.get(user_id))   # capture before the bot may wipe it
+            conv["last_seen"] = now
+            conv["msgs"] += 1
+        if stale:
+            _record(stale, "abandoned", ended_at=stale["last_seen"])
+    except Exception as e:
+        log.error(f"Metrics open error: {e}")
+
+
+def metrics_close(user_id: str, outcome: str, state: dict = None,
+                  reason: str = "", create_if_missing: bool = False):
+    with _active_lock:
+        conv = _active.pop(user_id, None)
+    if conv is None:
+        if not create_if_missing:
+            return
+        conv = _new_conv(user_id, time.time())
+    _merge_state(conv, state)
+    _record(conv, outcome, reason=reason)
+
+
+def metrics_after_reply(user_id: str, reply_text: str):
+    """Call after the bot has produced its reply. Records 'resolved' when the customer confirms."""
+    try:
+        state = user_states.get(user_id, {})
+        with _active_lock:
+            conv = _active.get(user_id)
+            if conv:
+                _merge_state(conv, state)
+        if GREAT_NEWS in (reply_text or ""):
+            metrics_close(user_id, "resolved")
+    except Exception as e:
+        log.error(f"Metrics reply error: {e}")
+
+
+def metrics_on_notify(customer_number: str, state: dict):
+    """Call from notify_agents. A real escalation closes the conversation as 'escalated';
+    the 10-minute 'no response' nudge only flags it as stalled (the customer may still reply)."""
+    try:
+        state = state or {}
+        notes = state.get("extra_notes", "") or ""
+        if notes.startswith("⏰"):
+            with _active_lock:
+                conv = _active.get(customer_number)
+                if conv:
+                    conv["stalled"] = True
+            return
+        metrics_close(customer_number, "escalated", state=state,
+                      reason=notes or state.get("fault_type", ""), create_if_missing=True)
+    except Exception as e:
+        log.error(f"Metrics notify error: {e}")
+
+
+def metrics_sweep():
+    """Called every minute: conversations silent for 2h are closed as 'went quiet'."""
+    try:
+        now, stale = time.time(), []
+        with _active_lock:
+            for uid, conv in list(_active.items()):
+                if now - conv["last_seen"] > SESSION_RESET_SECS:
+                    stale.append(_active.pop(uid))
+        for conv in stale:
+            _record(conv, "abandoned", ended_at=conv["last_seen"])
+    except Exception as e:
+        log.error(f"Metrics sweep error: {e}")
+
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+
+def _load_rows(days: int) -> list:
+    conn = _metrics_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(_q("SELECT " + ", ".join(_METRIC_COLS) + " FROM ace_conversations "
+                       "WHERE ended_at >= ? ORDER BY ended_at DESC LIMIT 20000"),
+                    (time.time() - days * 86400,))
+        return [dict(zip(_METRIC_COLS, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _pct(n, d) -> str:
+    return f"{100 * n / d:.0f}%" if d else "–"
+
+
+def _fmt_dur(secs) -> str:
+    secs = int(secs)
+    m, s = divmod(secs, 60)
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m" if h else (f"{m}m {s}s" if m else f"{s}s")
+
+
+def _dashboard_authorized() -> bool:
+    if not DASHBOARD_PASSWORD:
+        return False
+    auth = request.authorization
+    return bool(auth and auth.password and
+                hmac.compare_digest(auth.password.encode(), DASHBOARD_PASSWORD.encode()))
+
+
+def _dash_gate():
+    """Returns an error Response if the caller may not see the dashboard, else None."""
+    if not DASHBOARD_PASSWORD:
+        return Response("Dashboard disabled — set DASHBOARD_PASSWORD in the Render environment.", 503)
+    if not _dashboard_authorized():
+        return Response("Login required", 401, {"WWW-Authenticate": 'Basic realm="AcE Dashboard"'})
+    return None
+
+
+_DASH_CSS = """
+:root{--ink:#1f2a30;--muted:#6b7780;--line:#e4e8eb;--bg:#f5f7f8;--card:#fff;--brand:#37454d;--lime:#b9dc2f;--green:#2e9e5b;--red:#d64545;--grey:#aab4ba}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--brand);color:#fff;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;border-bottom:4px solid var(--lime)}
+header h1{margin:0;font-size:20px}header small{opacity:.75;display:block}
+.tabs a{color:#fff;text-decoration:none;padding:6px 12px;border-radius:6px;margin-left:4px;font-size:14px;background:rgba(255,255,255,.12)}
+.tabs a.on{background:var(--lime);color:#1f2a30;font-weight:600}
+main{max-width:1180px;margin:0 auto;padding:20px}
+.warn{background:#fff4d6;border:1px solid #f0d58a;padding:10px 14px;border-radius:8px;margin-bottom:16px;font-size:14px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+.kpi span{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.kpi b{display:block;font-size:28px;margin:4px 0}.kpi em{font-style:normal;font-size:12px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:16px;margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;overflow-x:auto}
+.card h2{margin:0 0 10px;font-size:15px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--muted);font-weight:600;font-size:12px}td.n,th.n{text-align:right}
+.badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;color:#fff}
+.b-resolved{background:var(--green)}.b-escalated{background:var(--red)}.b-abandoned{background:var(--grey)}
+.chart{display:flex;align-items:stretch;gap:6px;height:160px}
+.day{flex:1;display:flex;flex-direction:column;min-width:14px}
+.bars{flex:1;display:flex;flex-direction:column-reverse}
+.lbl{font-size:10px;color:var(--muted);text-align:center;margin-top:4px}
+.legend{font-size:12px;color:var(--muted);margin-top:10px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 4px 0 12px}
+.empty{color:var(--muted);font-size:13px}
+footer{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6}
+"""
+
+
+def _agg_table(rows, keyfn, headers, limit=10, sort=None):
+    """Groups rows by keyfn and returns an HTML table with per-outcome counts."""
+    groups = {}
+    for r in rows:
+        k = keyfn(r)
+        if k is None:
+            continue
+        g = groups.setdefault(k, {"t": 0, "resolved": 0, "escalated": 0, "abandoned": 0})
+        g["t"] += 1
+        g[r["outcome"]] = g.get(r["outcome"], 0) + 1
+    if not groups:
+        return '<p class="empty">No data in this period yet.</p>'
+    items = sorted(groups.items(), key=sort or (lambda kv: -kv[1]["t"]))[:limit]
+    head = "".join(f"<th>{h}</th>" for h in headers) + \
+           '<th class="n">Total</th><th class="n">Resolved</th><th class="n">Escalated</th>' \
+           '<th class="n">Went quiet</th><th class="n">Resolved %</th>'
+    body = ""
+    for k, g in items:
+        cells = "".join(f"<td>{html.escape(str(c))}</td>" for c in (k if isinstance(k, tuple) else (k,)))
+        body += (f"<tr>{cells}<td class='n'>{g['t']}</td><td class='n'>{g['resolved']}</td>"
+                 f"<td class='n'>{g['escalated']}</td><td class='n'>{g['abandoned']}</td>"
+                 f"<td class='n'>{_pct(g['resolved'], g['t'])}</td></tr>")
+    return f"<table><tr>{head}</tr>{body}</table>"
+
+
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    denied = _dash_gate()
+    if denied:
+        return denied
+    try:
+        days = int(request.args.get("days", "7"))
+    except ValueError:
+        days = 7
+    if days not in (1, 7, 30, 90):
+        days = 7
+    try:
+        rows = _load_rows(days)
+    except Exception as e:
+        log.error(f"Dashboard load error: {e}")
+        return Response(f"Could not load metrics: {html.escape(str(e))}", 500)
+
+    esc = html.escape
+    total     = len(rows)
+    resolved  = sum(1 for r in rows if r["outcome"] == "resolved")
+    escalated = sum(1 for r in rows if r["outcome"] == "escalated")
+    quiet     = sum(1 for r in rows if r["outcome"] == "abandoned")
+    stalled   = sum(1 for r in rows if r["stalled"])
+    identified = sum(1 for r in rows if r["charger"])
+    res_times = [r["ended_at"] - r["started_at"] for r in rows if r["outcome"] == "resolved"]
+    med_res   = _fmt_dur(statistics.median(res_times)) if res_times else "–"
+    per_cust  = {}
+    for r in rows:
+        per_cust[r["customer_hash"]] = per_cust.get(r["customer_hash"], 0) + 1
+    repeat = sum(1 for v in per_cust.values() if v > 1)
+    with _active_lock:
+        open_now = len(_active)
+
+    def kpi(label, value, note=""):
+        return f'<div class="kpi"><span>{label}</span><b>{value}</b><em>{note}</em></div>'
+    kpis = "".join([
+        kpi("Conversations", total, f"{open_now} open right now"),
+        kpi("Confirmed resolved", _pct(resolved, total), f"{resolved} customers said it was sorted"),
+        kpi("Reached a human", _pct(escalated, total), f"{escalated} escalations"),
+        kpi("Went quiet", _pct(quiet, total), f"{quiet} with no confirmation"),
+        kpi("Median time to resolve", med_res, "confirmed resolutions only"),
+        kpi("Charger identified", _pct(identified, total), "QR / ID lookup worked"),
+        kpi("Repeat customers", repeat, f"of {len(per_cust)} unique customers"),
+        kpi("Stalled mid-flow", stalled, "10-min no-reply nudges"),
+    ])
+
+    # ── Daily trend ──
+    n_days = max(7, min(days, 30))
+    today = datetime.now(SAST).date()
+    buckets = {today - timedelta(days=i): {"resolved": 0, "escalated": 0, "abandoned": 0}
+               for i in range(n_days)}
+    for r in rows:
+        d = datetime.fromtimestamp(r["ended_at"], SAST).date()
+        if d in buckets:
+            buckets[d][r["outcome"]] = buckets[d].get(r["outcome"], 0) + 1
+    peak = max([sum(b.values()) for b in buckets.values()] + [1])
+    cols = ""
+    for d in sorted(buckets):
+        b = buckets[d]
+        t = sum(b.values())
+        cols += (f'<div class="day" title="{d:%a %d %b}: {b["resolved"]} resolved, '
+                 f'{b["escalated"]} escalated, {b["abandoned"]} went quiet">'
+                 f'<div class="bars">'
+                 f'<div style="flex:{b["resolved"]} 1 0;background:var(--green)"></div>'
+                 f'<div style="flex:{b["escalated"]} 1 0;background:var(--red)"></div>'
+                 f'<div style="flex:{b["abandoned"]} 1 0;background:var(--grey)"></div>'
+                 f'<div style="flex:{peak - t} 1 0"></div></div>'
+                 f'<div class="lbl">{d:%d}</div></div>')
+    trend = (f'<div class="chart">{cols}</div><div class="legend">'
+             '<i style="background:var(--green)"></i>Resolved'
+             '<i style="background:var(--red)"></i>Escalated'
+             '<i style="background:var(--grey)"></i>Went quiet</div>')
+
+    issues = _agg_table(rows, lambda r: r["fault_type"] or "Not classified", ["Issue"])
+    esc_reasons = _agg_table([r for r in rows if r["outcome"] == "escalated"],
+                             lambda r: r["fault_type"] or "Not classified", ["Why it reached a human"])
+    chargers = _agg_table(rows, lambda r: (r["charger"], r["site"] or "–") if r["charger"] else None,
+                          ["Charger", "Site"],
+                          sort=lambda kv: (-kv[1]["escalated"], -kv[1]["t"]))
+    sites = _agg_table(rows, lambda r: r["site"] or None, ["Site"],
+                       sort=lambda kv: (-kv[1]["escalated"], -kv[1]["t"]))
+
+    recent = ""
+    for r in rows[:25]:
+        when = datetime.fromtimestamp(r["ended_at"], SAST).strftime("%d %b %H:%M")
+        label = {"abandoned": "went quiet"}.get(r["outcome"], r["outcome"])
+        recent += (f"<tr><td>{when}</td><td>…{esc(r['customer_tail'] or '')}</td>"
+                   f"<td>{esc(r['charger'] or '–')}</td><td>{esc(r['site'] or '–')}</td>"
+                   f"<td>{esc(r['fault_type'] or '–')}</td>"
+                   f"<td><span class='badge b-{esc(r['outcome'])}'>{esc(label)}</span></td>"
+                   f"<td class='n'>{_fmt_dur(r['ended_at'] - r['started_at'])}</td>"
+                   f"<td class='n'>{r['messages']}</td>"
+                   f"<td>{esc((r['reason'] or '')[:70])}</td></tr>")
+    recent_tbl = ('<table><tr><th>Ended</th><th>Customer</th><th>Charger</th><th>Site</th><th>Issue</th>'
+                  '<th>Outcome</th><th class="n">Duration</th><th class="n">Msgs</th><th>Note</th></tr>'
+                  + recent + "</table>") if recent else '<p class="empty">No finished conversations yet.</p>'
+
+    tabs = "".join(
+        f'<a href="/dashboard?days={d}" class="{"on" if d == days else ""}">{lbl}</a>'
+        for d, lbl in ((1, "24 hours"), (7, "7 days"), (30, "30 days"), (90, "90 days")))
+    warn = "" if _USE_PG else (
+        '<div class="warn">⚠️ Metrics are stored in a temporary file — history is wiped on every '
+        'deploy or restart. Set <b>DATABASE_URL</b> (Render Postgres) to keep history.</div>')
+    updated = datetime.now(SAST).strftime("%d %b %Y %H:%M")
+
+    page = (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<meta http-equiv="refresh" content="60"><title>AcE Dashboard</title>'
+        f"<style>{_DASH_CSS}</style></head><body>"
+        f'<header><div><h1>AcE — Support Bot Performance</h1><small>Updated {updated} SAST · '
+        f'refreshes every minute</small></div><div class="tabs">{tabs}'
+        f'<a href="/dashboard/export.csv?days={days}">⬇ CSV</a></div></header><main>'
+        f"{warn}<div class='kpis'>{kpis}</div>"
+        f"<div class='card' style='margin-bottom:16px'><h2>Daily trend (last {n_days} days)</h2>{trend}</div>"
+        f"<div class='grid'><div class='card'><h2>Issue types</h2>{issues}</div>"
+        f"<div class='card'><h2>Why conversations reached a human</h2>{esc_reasons}</div></div>"
+        f"<div class='grid'><div class='card'><h2>Chargers needing attention</h2>{chargers}</div>"
+        f"<div class='card'><h2>Sites</h2>{sites}</div></div>"
+        f"<div class='card'><h2>Recent conversations</h2>{recent_tbl}</div>"
+        "<footer><b>How to read this.</b> A conversation is <i>resolved</i> only when the customer "
+        "confirms it. <i>Went quiet</i> means no reply for 2 hours — many of those are silently "
+        "sorted, so the true resolution rate sits between “Confirmed resolved” and "
+        "“100% − Reached a human”. Numbers are conversations, not messages. A customer who keeps "
+        "chatting after being handed to an agent may open a new conversation. Times are SAST. "
+        "Customer numbers are not stored, only the last 4 digits.</footer>"
+        "</main></body></html>")
+    return Response(page, mimetype="text/html")
+
+
+def _csv_safe(v):
+    """Stops spreadsheet formula injection from customer-typed text."""
+    s = "" if v is None else str(v)
+    return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
+
+
+@app.route("/dashboard/export.csv", methods=["GET"])
+def dashboard_export():
+    denied = _dash_gate()
+    if denied:
+        return denied
+    try:
+        days = int(request.args.get("days", "30"))
+    except ValueError:
+        days = 30
+    days = min(max(days, 1), 365)
+    try:
+        rows = _load_rows(days)
+    except Exception as e:
+        return Response(f"Could not load metrics: {e}", 500)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["ended_sast", "started_sast", "outcome", "customer_last4", "charger", "site",
+                "issue", "error_code", "note", "messages", "stalled", "duration_secs"])
+    for r in rows:
+        w.writerow([datetime.fromtimestamp(r["ended_at"], SAST).strftime("%Y-%m-%d %H:%M:%S"),
+                    datetime.fromtimestamp(r["started_at"], SAST).strftime("%Y-%m-%d %H:%M:%S"),
+                    r["outcome"], _csv_safe(r["customer_tail"]), _csv_safe(r["charger"]),
+                    _csv_safe(r["site"]), _csv_safe(r["fault_type"]), _csv_safe(r["error_code"]),
+                    _csv_safe(r["reason"]), r["messages"], r["stalled"],
+                    int(r["ended_at"] - r["started_at"])])
+    return Response(buf.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename=ace_conversations_{days}d.csv"})
+
+
+metrics_init()
 
 # ── Messages ──────────────────────────────────────────────────────────────────
 
@@ -4239,12 +4720,14 @@ def webhook():
         return str(MessagingResponse())  # Empty response — bot stays silent
 
     # ── Normal customer flow ──────────────────────────────────────────────────
+    metrics_open(sender)
     result = handle_message(sender, incoming, has_media=has_media, received_media=received_media)
 
     if isinstance(result, tuple):
         response_text, media_url = result
     else:
         response_text, media_url = result, None
+    metrics_after_reply(sender, response_text)
 
     # ── Escalation detected — notify agents ──────────────────────────────────
     if "Connecting you to a support agent" in response_text:
