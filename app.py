@@ -2163,7 +2163,8 @@ def dashboard():
 
     issues = _agg_table(rows, lambda r: r["fault_type"] or "Not classified", ["Issue"])
     esc_reasons = _agg_table([r for r in rows if r["outcome"] == "escalated"],
-                             lambda r: r["fault_type"] or "Not classified", ["Why it reached a human"])
+                             lambda r: r["fault_type"] or "Asked for an agent (no issue selected)",
+                             ["Why it reached a human"])
     chargers = _agg_table(rows, lambda r: (r["charger"], r["site"] or "–") if r["charger"] else None,
                           ["Charger", "Site"],
                           sort=lambda kv: (-kv[1]["escalated"], -kv[1]["t"]))
@@ -2205,8 +2206,8 @@ def dashboard():
         f"<div class='card' style='margin-bottom:16px'><h2>Daily trend (last {n_days} days)</h2>{trend}</div>"
         f"<div class='grid'><div class='card'><h2>Issue types</h2>{issues}</div>"
         f"<div class='card'><h2>Why conversations reached a human</h2>{esc_reasons}</div></div>"
-        f"<div class='grid'><div class='card'><h2>Chargers needing attention</h2>{chargers}</div>"
-        f"<div class='card'><h2>Sites</h2>{sites}</div></div>"
+        f"<div class='card' style='margin-bottom:16px'><h2>Chargers needing attention</h2>{chargers}</div>"
+        f"<div class='card' style='margin-bottom:16px'><h2>Sites</h2>{sites}</div>"
         f"<div class='card'><h2>Recent conversations</h2>{recent_tbl}</div>"
         "<footer><b>How to read this.</b> A conversation is <i>resolved</i> only when the customer "
         "confirms it. <i>Went quiet</i> means no reply for 2 hours — many of those are silently "
