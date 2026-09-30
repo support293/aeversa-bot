@@ -394,8 +394,21 @@ def start_timeout_checker():
     thread.start()
 
 
+ESCALATION_TEMPLATE_SID = os.environ.get("ESCALATION_TEMPLATE_SID", "")
+
+
 def notify_agents(customer_number: str, state: dict):
-    """Sends WhatsApp notification to all agents when an escalation happens."""
+    """Sends WhatsApp notification to all agents when an escalation happens.
+
+    Sends TWO messages to each agent:
+    1. The approved 'ace_escalation_alert' template — this is guaranteed to
+       deliver even if the agent hasn't messaged AcE in the last 24 hours,
+       because Meta allows approved templates to be sent at any time.
+    2. The existing free-form message with full detail and the PAUSE
+       instructions — this only delivers if the agent is inside the
+       24-hour window, but gives richer detail when it does. Its failure
+       is expected and silent; the template above is the guaranteed part.
+    """
     metrics_on_notify(customer_number, state)
 
     def _notify():
@@ -424,17 +437,39 @@ def notify_agents(customer_number: str, state: dict):
             f"Reply: *PAUSE {clean_num}*\n"
             f"Then contact the customer directly on WhatsApp."
         )
+        template_reason = fault_type if fault_type != "Not specified" else (extra_notes or "Needs assistance")
+        template_vars = json.dumps({
+            "1": clean_num,
+            "2": charger_display,
+            "3": site,
+            "4": template_reason[:100],
+        })
         client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         for agent_wa, agent_name in AGENT_NUMBERS.items():
+            if ESCALATION_TEMPLATE_SID:
+                try:
+                    client.messages.create(
+                        from_=TWILIO_WA_NUMBER,
+                        to=agent_wa,
+                        content_sid=ESCALATION_TEMPLATE_SID,
+                        content_variables=template_vars,
+                    )
+                    log.info(f"✅ Agent template alert sent to {agent_name}")
+                except Exception as e:
+                    log.error(f"❌ Failed to send template alert to {agent_name}: {e}")
+            else:
+                log.warning("ESCALATION_TEMPLATE_SID not set — skipping guaranteed template alert, "
+                           "only trying the free-form message below")
             try:
                 client.messages.create(
                     from_=TWILIO_WA_NUMBER,
                     to=agent_wa,
                     body=message
                 )
-                log.info(f"✅ Agent notification sent to {agent_name}")
+                log.info(f"✅ Agent detail notification sent to {agent_name}")
             except Exception as e:
-                log.error(f"❌ Failed to notify {agent_name}: {e}")
+                log.info(f"ℹ️ Free-form detail message not delivered to {agent_name} "
+                        f"(likely outside 24h window — template alert above still went through): {e}")
 
     threading.Thread(target=_notify, daemon=True).start()
 
