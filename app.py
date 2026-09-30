@@ -1811,7 +1811,8 @@ _active_lock     = threading.Lock()
 _db_write_lock   = threading.Lock()
 
 _METRIC_COLS = ["started_at", "ended_at", "outcome", "customer_hash", "customer_tail",
-                "charger", "site", "fault_type", "error_code", "reason", "messages", "stalled"]
+                "charger", "site", "fault_type", "error_code", "reason", "messages", "stalled",
+                "customer_full"]
 
 
 def _metrics_conn():
@@ -1843,8 +1844,13 @@ def metrics_init():
             outcome TEXT NOT NULL,
             customer_hash TEXT, customer_tail TEXT,
             charger TEXT, site TEXT, fault_type TEXT, error_code TEXT,
-            reason TEXT, messages INTEGER, stalled INTEGER)""")
+            reason TEXT, messages INTEGER, stalled INTEGER, customer_full TEXT)""")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ace_conv_ended ON ace_conversations (ended_at)")
+        try:
+            cur.execute("ALTER TABLE ace_conversations ADD COLUMN customer_full TEXT")
+            conn.commit()
+        except Exception:
+            conn.rollback() if _USE_PG else None   # column already existed — fine
         conn.commit()
         where = "Postgres" if _USE_PG else f"SQLite file '{METRICS_DB_PATH}' (NOT durable on Render)"
         log.info(f"📊 Metrics storage ready: {where}")
@@ -1862,6 +1868,7 @@ def _new_conv(user_id: str, now: float) -> dict:
         "charger": "", "site": "", "fault_type": "", "error_code": "",
         "cust_hash": hashlib.sha256((METRICS_SALT + digits).encode()).hexdigest()[:12],
         "cust_tail": digits[-4:],
+        "cust_full": digits,   # dashboard-only — never written to the CSV export
     }
 
 
@@ -1884,7 +1891,7 @@ def _record(conv: dict, outcome: str, ended_at: float = None, reason: str = ""):
     reason   = (reason or "")[:300]
     row = (conv["started"], ended_at, outcome, conv["cust_hash"], conv["cust_tail"],
            conv["charger"], conv["site"], conv["fault_type"], conv["error_code"],
-           reason, conv["msgs"], 1 if conv["stalled"] else 0)
+           reason, conv["msgs"], 1 if conv["stalled"] else 0, conv.get("cust_full", ""))
     log.info("📊 METRIC " + json.dumps({
         "outcome": outcome, "charger": conv["charger"], "site": conv["site"],
         "fault": conv["fault_type"], "msgs": conv["msgs"], "stalled": conv["stalled"],
@@ -2175,7 +2182,8 @@ def dashboard():
     for r in rows[:25]:
         when = datetime.fromtimestamp(r["ended_at"], SAST).strftime("%d %b %H:%M")
         label = {"abandoned": "went quiet"}.get(r["outcome"], r["outcome"])
-        recent += (f"<tr><td>{when}</td><td>…{esc(r['customer_tail'] or '')}</td>"
+        cust_display = r.get("customer_full") or ("…" + (r["customer_tail"] or ""))
+        recent += (f"<tr><td>{when}</td><td>{esc(cust_display)}</td>"
                    f"<td>{esc(r['charger'] or '–')}</td><td>{esc(r['site'] or '–')}</td>"
                    f"<td>{esc(r['fault_type'] or '–')}</td>"
                    f"<td><span class='badge b-{esc(r['outcome'])}'>{esc(label)}</span></td>"
