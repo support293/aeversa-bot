@@ -3484,6 +3484,20 @@ def handle_message(user_id: str, msg_raw: str, has_media: bool = False, received
         is_greeting = msg.strip(' .!?').lower() in GREETING_WORDS
         is_confused = any(contains_phrase(msg, p) for p in CONFUSION_PHRASES)
 
+        # A bare acknowledgement ("thanks", "ok", "yes"...) here is not a
+        # failed charger-identification attempt — it's just smalltalk, most
+        # often sent after an earlier message in this same session. Reply
+        # with a gentle nudge and leave unrecognized_attempts untouched, so
+        # it doesn't silently burn one of the customer's 3 tries towards
+        # escalation. (await_charger_id already behaves this way; await_qr
+        # previously fell straight through into the attempts counter below.)
+        if is_greeting:
+            return (
+                "😊 No problem! Whenever you're ready, just send a photo of "
+                "your *Charger ID sticker*, or type the *Charger ID*, "
+                "and I'll help you out."
+            )
+
         if len(msg_raw.strip()) >= 3 and not is_greeting:
 
             # Only try the Ampcontrol name search if this doesn't read as a
@@ -4771,6 +4785,19 @@ def webhook():
         response_text, media_url = result
     else:
         response_text, media_url = result, None
+
+    # Belt-and-braces fix for a real bug: several step handlers inside
+    # handle_message() write a fresh state dict without carrying forward
+    # "last_activity". Both the 10-minute nudge and the 2-hour reset skip
+    # any session whose last_activity is missing/0, so once that happens
+    # the session is permanently invisible to both timeout checks — it
+    # never resets and never escalates, no matter how long it sits idle.
+    # Re-stamping it here, after every single reply, guarantees the
+    # timestamp survives regardless of how the step handler built its
+    # returned state, without having to touch every call site individually.
+    if sender in user_states:
+        user_states[sender]["last_activity"] = time.time()
+
     metrics_after_reply(sender, response_text)
 
     # ── Escalation detected — notify agents ──────────────────────────────────
