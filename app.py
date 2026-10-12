@@ -1890,12 +1890,16 @@ def metrics_init():
             charger TEXT, site TEXT, fault_type TEXT, error_code TEXT,
             reason TEXT, messages INTEGER, stalled INTEGER, customer_full TEXT)""")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ace_conv_ended ON ace_conversations (ended_at)")
-        try:
-            cur.execute("ALTER TABLE ace_conversations ADD COLUMN customer_full TEXT")
+        conn.commit()   # make sure the table exists before the migration step
+        if _USE_PG:
+            cur.execute("ALTER TABLE ace_conversations ADD COLUMN IF NOT EXISTS customer_full TEXT")
             conn.commit()
-        except Exception:
-            conn.rollback() if _USE_PG else None   # column already existed — fine
-        conn.commit()
+        else:
+            try:
+                cur.execute("ALTER TABLE ace_conversations ADD COLUMN customer_full TEXT")
+                conn.commit()
+            except Exception:
+                pass   # column already existed — fine
         where = "Postgres" if _USE_PG else f"SQLite file '{METRICS_DB_PATH}' (NOT durable on Render)"
         log.info(f"📊 Metrics storage ready: {where}")
     except Exception as e:
