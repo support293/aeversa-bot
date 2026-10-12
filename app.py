@@ -109,6 +109,11 @@ paused_customers: dict[str, float] = {}
 ESCALATION_TIMEOUT_SECS = 600    # 10 minutes — notify agent if no response
 SESSION_RESET_SECS      = 7200   # 2 hours   — reset session completely
 
+# Customers waiting at the "send your Charger ID" step who never reply
+IDLE_PROMPT_STEPS  = {"await_qr", "await_charger_id"}
+IDLE_NUDGE_SECS    = 600    # 10 minutes — friendly check-in to the customer
+IDLE_ESCALATE_SECS = 1800   # 30 minutes — escalate to agents (no response from customer)
+
 # Steps where a customer is actively waiting for YES/NO — these trigger escalation
 MID_FLOW_STEPS = {
     "opt1_key_removed", "opt1_replug_fixed", "opt1_removed_key_try",
@@ -352,6 +357,45 @@ def check_session_timeouts():
                     "sticker and I'll assist you right away! ⚡"
                 )
             continue
+
+        # ── No response at the "send your Charger ID" step ───────────────────
+        # A customer who says "Hi" (or sends an unreadable photo) and then goes
+        # quiet is not in MID_FLOW_STEPS, so the check below never covers them.
+        #   10 min → friendly check-in sent to the customer
+        #   30 min → escalate to agents + email, reason "No response from customer"
+        # Customers who were just given a general answer (kb_answered) are
+        # skipped: they are not waiting on anything.
+        if step in IDLE_PROMPT_STEPS and not state.get("kb_answered", False):
+            if elapsed > IDLE_ESCALATE_SECS and not state.get("idle_escalated", False):
+                mins = int(elapsed / 60)
+                notes = (f"No response from customer for {mins} minutes — started a chat "
+                         f"but never identified a charger (step: {step})")
+                log.info(f"⏰ No-response escalation for {user_id} — {mins}min in '{step}'")
+                user_states[user_id] = {**state, "idle_escalated": True, "idle_nudged": True}
+                notify_agents(user_id, {
+                    **state,
+                    "fault_type":  "No response from customer",
+                    "extra_notes": notes,
+                })
+                send_escalation_email(
+                    customer_number = user_id.replace("whatsapp:", ""),
+                    fault_type      = "No response from customer",
+                    site            = state.get("site"),
+                    charger_id      = state.get("charger_id") or state.get("charger_uuid"),
+                    extra_notes     = notes,
+                )
+                continue
+            if elapsed > IDLE_NUDGE_SECS and not state.get("idle_nudged", False):
+                log.info(f"⏰ Idle check-in sent to {user_id} — {elapsed/60:.0f}min in '{step}'")
+                user_states[user_id] = {**state, "idle_nudged": True}
+                send_whatsapp_message(
+                    user_id,
+                    "👋 Hi, are you still there? 😊\n\n"
+                    "If you need help with a charger, just send a photo of the "
+                    "*Charger ID sticker* or type the *Charger ID*, "
+                    "and I'll check it straight away. ⚡"
+                )
+                continue
 
         # ── 10 Minute Mid-Flow Escalation ────────────────────────────────────
         if (elapsed > ESCALATION_TIMEOUT_SECS
@@ -4778,6 +4822,11 @@ def webhook():
         return str(MessagingResponse())  # Empty response — bot stays silent
 
     # ── Normal customer flow ──────────────────────────────────────────────────
+    # Any new message from the customer restarts the no-response clocks.
+    if sender in user_states:
+        user_states[sender].pop("idle_nudged", None)
+        user_states[sender].pop("idle_escalated", None)
+
     metrics_open(sender)
     result = handle_message(sender, incoming, has_media=has_media, received_media=received_media)
 
