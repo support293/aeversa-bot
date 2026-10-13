@@ -424,10 +424,26 @@ def check_session_timeouts():
             log.info(f"✅ Timeout notifications sent for {user_id}")
 
 
+_checker_pid  = None
+_checker_lock = threading.Lock()
+
 def start_timeout_checker():
-    """Starts a background thread that checks session timeouts every 60 seconds."""
+    """Starts a background thread that checks session timeouts every 60 seconds.
+
+    Safe to call repeatedly: it only starts a thread if this *process* does not
+    already have one. That matters under gunicorn, where a thread started in the
+    parent process (e.g. with --preload) does NOT exist in the worker processes
+    that actually serve WhatsApp messages. The webhook calls this on every
+    request, so the worker that holds the customer sessions always has a timer.
+    """
+    global _checker_pid
+    with _checker_lock:
+        if _checker_pid == os.getpid():
+            return
+        _checker_pid = os.getpid()
+
     def _run():
-        log.info("⏱️ Session timeout checker started")
+        log.info(f"⏱️ Session timeout checker started (pid {os.getpid()})")
         while True:
             time.sleep(60)
             try:
@@ -4806,6 +4822,7 @@ def serve_media(filename):
 # ── Webhook ───────────────────────────────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    start_timeout_checker()   # no-op if this worker already has its timer running
     incoming        = request.form.get("Body", "").strip()
     sender          = request.form.get("From", "unknown")
     num_media       = int(request.form.get("NumMedia", "0"))
