@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import requests
@@ -100,6 +101,10 @@ AGENT_NUMBERS = {
     "whatsapp:+46704588801": "Mike",
 }
 PAUSE_DURATION_HOURS = 4
+RESOLVED_CUSTOMER_MESSAGE = (
+    "✅ Your support request has been marked as *resolved* by our team.\n\n"
+    "If the issue comes back or you need anything else, just message us here. 🔌"
+)
 
 # ── Paused Customers ───────────────────────────────────────────────────────────
 # {customer_whatsapp_number: pause_expiry_unix_timestamp}
@@ -308,7 +313,7 @@ def send_whatsapp_message(to: str, message: str):
     """Sends a proactive WhatsApp message to a customer via Twilio REST API."""
     if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
         log.warning("Twilio credentials not set — cannot send proactive message")
-        return
+        return False
     try:
         client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         client.messages.create(
@@ -317,8 +322,10 @@ def send_whatsapp_message(to: str, message: str):
             body=message
         )
         log.info(f"✅ Proactive message sent to {to}")
+        return True
     except Exception as e:
         log.error(f"❌ Failed to send proactive message to {to}: {e}")
+        return False
 
 
 def check_session_timeouts():
@@ -625,9 +632,70 @@ def handle_agent_command(sender: str, command: str) -> str:
             lines.append(f"• *{clean}*{paused}\n  Fault: {fault} | Step: {step}")
         return "\n".join(lines)
 
+    # ── RESOLVED ───────────────────────────────────────────────────────────────
+    if cmd_upper.startswith("RESOLVED"):
+        parts = cmd.split(None, 2)
+        usage = ("Usage: *RESOLVED +27XXXXXXXXX what you did*\n"
+                 "Example: RESOLVED +27821234567 Reset the charger remotely, session started\n\n"
+                 "The note is required so we have a record of what happened. "
+                 "Type the number without spaces.")
+        if len(parts) < 3 or len(parts[2].strip()) < 3:
+            return usage
+        number = re.sub(r"[^\d+]", "", parts[1])
+        if number.startswith("0") and len(number) == 10:
+            number = "+27" + number[1:]            # local format 082… → +2782…
+        elif not number.startswith("+"):
+            number = "+" + number
+        if not re.fullmatch(r"\+\d{9,15}", number):
+            return usage
+        note = parts[2].strip()[:300]
+        wa   = f"whatsapp:{number}"
+        paused_customers.pop(wa, None)                      # bot talks to them again
+        if wa in user_states:
+            user_states[wa] = {"step": "start", "last_activity": 0}   # fresh start next time
+        notified = send_whatsapp_message(wa, RESOLVED_CUSTOMER_MESSAGE)
+        info = record_agent_resolution(number, agent_name, note, notified)
+        log.info(f"✅ Ticket for {number} resolved by {agent_name}: {note}")
+        lines = [f"✅ *Ticket closed for {number}*"]
+        if info.get("minutes") is not None:
+            lines.append(f"Time to resolve: {_fmt_dur(info['minutes'] * 60)}")
+        else:
+            lines.append("ℹ️ No open escalation was on record for this number — resolution saved anyway.")
+        lines.append(f"Note saved: “{note}”")
+        lines.append("Customer notified ✅" if notified else
+                     "⚠️ Could not message the customer (their 24-hour WhatsApp window may have closed). "
+                     "The ticket is still closed.")
+        if not info.get("saved"):
+            lines.append("⚠️ The resolution could not be saved to the dashboard — please tell Given.")
+        return "\n".join(lines)
+
+    # ── OPEN ───────────────────────────────────────────────────────────────────
+    if cmd_upper == "OPEN":
+        try:
+            tickets = open_tickets()
+        except Exception as e:
+            log.error(f"OPEN command error: {e}")
+            return "⚠️ Could not load open tickets right now. Please try again shortly."
+        if not tickets:
+            return "✅ *No open tickets.* Every escalation in the last 7 days has been resolved."
+        now = time.time()
+        lines = [f"📂 *Open tickets — escalated, not yet resolved ({len(tickets)}):*\n"]
+        for t in tickets[:15]:
+            where = t["charger"] or t["site"] or "–"
+            lines.append(f"• *{t['customer']}* — {t['fault_type'] or 'Not specified'} | {where} | "
+                         f"open {_fmt_dur(now - t['escalated_at'])}")
+        if len(tickets) > 15:
+            lines.append(f"…and {len(tickets) - 15} more")
+        lines.append("\nClose one with: *RESOLVED +27XXXXXXXXX what you did*")
+        return "\n".join(lines)
+
     # ── HELP / UNKNOWN ─────────────────────────────────────────────────────────
     return (
         f"🤖 *AcE Agent Commands*\n\n"
+        f"*RESOLVED +27XXXXXXXXX note*\n"
+        f"Close a ticket, tell the customer, and record what you did\n\n"
+        f"*OPEN*\n"
+        f"See escalated tickets not yet resolved\n\n"
         f"*PAUSE +27XXXXXXXXX*\n"
         f"Stop bot for a customer for {PAUSE_DURATION_HOURS} hours\n\n"
         f"*RESUME +27XXXXXXXXX*\n"
@@ -1916,6 +1984,15 @@ def metrics_init():
                 conn.commit()
             except Exception:
                 pass   # column already existed — fine
+        cur.execute(f"""CREATE TABLE IF NOT EXISTS ace_resolutions (
+            id {pk},
+            resolved_at {num} NOT NULL,
+            customer_full TEXT, customer_tail TEXT,
+            agent TEXT, note TEXT,
+            charger TEXT, site TEXT, fault_type TEXT,
+            escalated_at {num}, minutes {num}, customer_notified INTEGER)""")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ace_res_cust ON ace_resolutions (customer_full, resolved_at)")
+        conn.commit()
         where = "Postgres" if _USE_PG else f"SQLite file '{METRICS_DB_PATH}' (NOT durable on Render)"
         log.info(f"📊 Metrics storage ready: {where}")
     except Exception as e:
@@ -2060,6 +2137,89 @@ def metrics_sweep():
         log.error(f"Metrics sweep error: {e}")
 
 
+# ── Agent resolutions ─────────────────────────────────────────────────────────
+OPEN_TICKET_DAYS = 7
+_RES_COLS = ["resolved_at", "customer_full", "customer_tail", "agent", "note", "charger", "site",
+             "fault_type", "escalated_at", "minutes", "customer_notified"]
+
+
+def _unresolved_escalations(cur, since: float) -> dict:
+    """{customer_full: [escalation rows, oldest first]} for escalations newer than that
+    customer's latest agent resolution."""
+    cur.execute(_q("SELECT customer_full, MAX(resolved_at) FROM ace_resolutions "
+                   "WHERE customer_full IS NOT NULL GROUP BY customer_full"))
+    last_res = {c: t for c, t in cur.fetchall()}
+    cur.execute(_q("SELECT customer_full, ended_at, charger, site, fault_type FROM ace_conversations "
+                   "WHERE outcome = 'escalated' AND customer_full IS NOT NULL AND customer_full <> '' "
+                   "AND ended_at >= ? ORDER BY ended_at ASC"), (since,))
+    out = {}
+    for cust, ended, charger, site, fault in cur.fetchall():
+        if ended > last_res.get(cust, 0):
+            out.setdefault(cust, []).append(
+                {"ended_at": ended, "charger": charger or "", "site": site or "", "fault_type": fault or ""})
+    return out
+
+
+def open_tickets(days: int = OPEN_TICKET_DAYS) -> list:
+    """Escalated customers nobody has closed with RESOLVED yet, oldest first."""
+    conn = _metrics_conn()
+    try:
+        groups = _unresolved_escalations(conn.cursor(), time.time() - days * 86400)
+    finally:
+        conn.close()
+    tickets = []
+    for cust, rows in groups.items():
+        detail = next((r for r in reversed(rows) if r["fault_type"] or r["charger"]), rows[-1])
+        tickets.append({"customer": cust, "escalated_at": rows[0]["ended_at"], "count": len(rows),
+                        "charger": detail["charger"], "site": detail["site"],
+                        "fault_type": detail["fault_type"]})
+    return sorted(tickets, key=lambda t: t["escalated_at"])
+
+
+def record_agent_resolution(customer: str, agent: str, note: str, notified: bool) -> dict:
+    """Saves an agent's RESOLVED command. Runs synchronously so the agent's reply can show
+    the time-to-resolve. Never raises."""
+    now = time.time()
+    info = {"saved": False, "minutes": None}
+    conn = None
+    try:
+        with _db_write_lock:
+            conn = _metrics_conn()
+            cur = conn.cursor()
+            rows = _unresolved_escalations(cur, now - 30 * 86400).get(customer, [])
+            charger = site = fault = ""
+            escalated_at = minutes = None
+            if rows:
+                detail = next((r for r in reversed(rows) if r["fault_type"] or r["charger"]), rows[-1])
+                charger, site, fault = detail["charger"], detail["site"], detail["fault_type"]
+                escalated_at = rows[0]["ended_at"]
+                minutes = max(0.0, (now - escalated_at) / 60)
+            row = (now, customer, customer[-4:], agent, note[:300], charger, site, fault,
+                   escalated_at, minutes, 1 if notified else 0)
+            cur.execute(_q("INSERT INTO ace_resolutions (" + ", ".join(_RES_COLS) + ") VALUES ("
+                           + ", ".join(["?"] * len(_RES_COLS)) + ")"), row)
+            conn.commit()
+            info.update(saved=True, minutes=minutes)
+    except Exception as e:
+        log.error(f"❌ Could not save agent resolution: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return info
+
+
+def _load_resolutions(days: int) -> list:
+    conn = _metrics_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(_q("SELECT " + ", ".join(_RES_COLS) + " FROM ace_resolutions "
+                       "WHERE resolved_at >= ? ORDER BY resolved_at DESC LIMIT 5000"),
+                    (time.time() - days * 86400,))
+        return [dict(zip(_RES_COLS, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
 def _load_rows(days: int) -> list:
@@ -2191,6 +2351,14 @@ def dashboard():
     repeat = sum(1 for v in per_cust.values() if v > 1)
     with _active_lock:
         open_now = len(_active)
+    try:
+        resolutions = _load_resolutions(days)
+        tickets_open = open_tickets()
+    except Exception as e:
+        log.error(f"Dashboard resolutions error: {e}")
+        resolutions, tickets_open = [], []
+    agent_times = [r["minutes"] for r in resolutions if r["minutes"] is not None]
+    med_agent = _fmt_dur(statistics.median(agent_times) * 60) if agent_times else "–"
 
     def kpi(label, value, note=""):
         return f'<div class="kpi"><span>{label}</span><b>{value}</b><em>{note}</em></div>'
@@ -2203,6 +2371,9 @@ def dashboard():
         kpi("Charger identified", _pct(identified, total), "QR / ID lookup worked"),
         kpi("Repeat customers", repeat, f"of {len(per_cust)} unique customers"),
         kpi("Stalled mid-flow", stalled, "10-min no-reply nudges"),
+        kpi("Closed by agents", len(resolutions), "agent used RESOLVED"),
+        kpi("Agent time to resolve", med_agent, "median, escalation → RESOLVED"),
+        kpi("Open tickets", len(tickets_open), "escalated, not yet resolved (7 days)"),
     ])
 
     # ── Daily trend ──
@@ -2258,6 +2429,27 @@ def dashboard():
                   '<th>Outcome</th><th class="n">Duration</th><th class="n">Msgs</th><th>Note</th></tr>'
                   + recent + "</table>") if recent else '<p class="empty">No finished conversations yet.</p>'
 
+    now_ts = time.time()
+    open_rows = "".join(
+        f"<tr><td>{esc(t['customer'])}</td><td>{esc(t['charger'] or '–')}</td>"
+        f"<td>{esc(t['site'] or '–')}</td><td>{esc(t['fault_type'] or '–')}</td>"
+        f"<td class='n'>{_fmt_dur(now_ts - t['escalated_at'])}</td></tr>" for t in tickets_open[:25])
+    open_tbl = ('<table><tr><th>Customer</th><th>Charger</th><th>Site</th><th>Issue</th>'
+                '<th class="n">Open for</th></tr>' + open_rows + "</table>"
+                ) if open_rows else '<p class="empty">No open tickets. 🎉</p>'
+    res_rows = "".join(
+        f"<tr><td>{datetime.fromtimestamp(r['resolved_at'], SAST).strftime('%d %b %H:%M')}</td>"
+        f"<td>{esc(r['customer_full'] or '…' + (r['customer_tail'] or ''))}</td>"
+        f"<td>{esc(r['charger'] or '–')}</td><td>{esc(r['site'] or '–')}</td>"
+        f"<td>{esc(r['fault_type'] or '–')}</td><td>{esc(r['agent'] or '–')}</td>"
+        f"<td class='n'>{_fmt_dur(r['minutes'] * 60) if r['minutes'] is not None else '–'}</td>"
+        f"<td style='white-space:normal;min-width:220px'>{esc(r['note'] or '')}</td></tr>"
+        for r in resolutions[:25])
+    res_tbl = ('<table><tr><th>Closed</th><th>Customer</th><th>Charger</th><th>Site</th><th>Issue</th>'
+               '<th>Agent</th><th class="n">Time to resolve</th><th>What was done</th></tr>'
+               + res_rows + "</table>") if res_rows else \
+              '<p class="empty">No tickets closed by agents in this period yet.</p>'
+
     tabs = "".join(
         f'<a href="/dashboard?days={d}" class="{"on" if d == days else ""}">{lbl}</a>'
         for d, lbl in ((1, "24 hours"), (7, "7 days"), (30, "30 days"), (90, "90 days")))
@@ -2273,8 +2465,11 @@ def dashboard():
         f"<style>{_DASH_CSS}</style></head><body>"
         f'<header><div><h1>AcE — Support Bot Performance</h1><small>Updated {updated} SAST · '
         f'refreshes every minute</small></div><div class="tabs">{tabs}'
-        f'<a href="/dashboard/export.csv?days={days}">⬇ CSV</a></div></header><main>'
+        f'<a href="/dashboard/export.csv?days={days}">⬇ CSV</a>'
+        f'<a href="/dashboard/resolutions.csv?days={days}">⬇ Resolutions</a></div></header><main>'
         f"{warn}<div class='kpis'>{kpis}</div>"
+        f"<div class='card' style='margin-bottom:16px'><h2>Open tickets — escalated, not yet resolved</h2>{open_tbl}</div>"
+        f"<div class='card' style='margin-bottom:16px'><h2>Closed by agents</h2>{res_tbl}</div>"
         f"<div class='card' style='margin-bottom:16px'><h2>Daily trend (last {n_days} days)</h2>{trend}</div>"
         f"<div class='grid'><div class='card'><h2>Issue types</h2>{issues}</div>"
         f"<div class='card'><h2>Why conversations reached a human</h2>{esc_reasons}</div></div>"
@@ -2286,7 +2481,7 @@ def dashboard():
         "sorted, so the true resolution rate sits between “Confirmed resolved” and "
         "“100% − Reached a human”. Numbers are conversations, not messages. A customer who keeps "
         "chatting after being handed to an agent may open a new conversation. Times are SAST. "
-        "Customer numbers are not stored, only the last 4 digits.</footer>"
+        "Full customer numbers show on this page; the CSV exports mask them to the last 4 digits.</footer>"
         "</main></body></html>")
     return Response(page, mimetype="text/html")
 
@@ -2324,6 +2519,35 @@ def dashboard_export():
                     int(r["ended_at"] - r["started_at"])])
     return Response(buf.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition": f"attachment; filename=ace_conversations_{days}d.csv"})
+
+
+@app.route("/dashboard/resolutions.csv", methods=["GET"])
+def dashboard_resolutions_export():
+    denied = _dash_gate()
+    if denied:
+        return denied
+    try:
+        days = min(max(int(request.args.get("days", "30")), 1), 365)
+    except ValueError:
+        days = 30
+    try:
+        rows = _load_resolutions(days)
+    except Exception as e:
+        return Response(f"Could not load resolutions: {e}", 500)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["closed_sast", "escalated_sast", "customer_last4", "charger", "site", "issue",
+                "agent", "minutes_to_resolve", "customer_notified", "note"])
+    for r in rows:
+        esc_at = (datetime.fromtimestamp(r["escalated_at"], SAST).strftime("%Y-%m-%d %H:%M:%S")
+                  if r["escalated_at"] else "")
+        w.writerow([datetime.fromtimestamp(r["resolved_at"], SAST).strftime("%Y-%m-%d %H:%M:%S"),
+                    esc_at, _csv_safe(r["customer_tail"]), _csv_safe(r["charger"]), _csv_safe(r["site"]),
+                    _csv_safe(r["fault_type"]), _csv_safe(r["agent"]),
+                    round(r["minutes"], 1) if r["minutes"] is not None else "",
+                    r["customer_notified"], _csv_safe(r["note"])])
+    return Response(buf.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename=ace_agent_resolutions_{days}d.csv"})
 
 
 metrics_init()
