@@ -2304,11 +2304,12 @@ def fetch_all_chargers() -> dict:
             name = c.get("customName") or c.get("name") or c.get("ocppId") or str(c.get("id", ""))[-8:]
             if not c.get("id") or not status:
                 continue
-            if any(x in str(name).lower() for x in OFFLINE_EXCLUDE):
+            site = c.get("networkName") or oname
+            if any(x in str(name).lower() or x in str(site).lower() for x in OFFLINE_EXCLUDE):
                 continue
             out["chargers"].append({
                 "key": f"{org['index']}:{c['id']}", "name": str(name), "status": status,
-                "site": c.get("networkName") or oname, "org": oname,
+                "site": site, "org": oname,
                 "online": status == "ONLINE"})
     return out
 
