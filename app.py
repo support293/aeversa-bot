@@ -4,6 +4,7 @@ import json
 import time
 import requests
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import urllib.parse
 from datetime import datetime, timezone, timedelta
@@ -335,6 +336,10 @@ def check_session_timeouts():
     - 2 hours any session → reset session + send fresh greeting to customer
     """
     metrics_sweep()
+    try:
+        maybe_run_offline_digest()
+    except Exception as e:
+        log.error(f"Offline digest scheduler error: {e}")
     now = datetime.now().timestamp()
     for user_id, state in list(user_states.items()):
 
@@ -669,6 +674,11 @@ def handle_agent_command(sender: str, command: str) -> str:
             lines.append("⚠️ The resolution could not be saved to the dashboard — please tell Given.")
         return "\n".join(lines)
 
+    # ── OFFLINE ────────────────────────────────────────────────────────────────
+    if cmd_upper == "OFFLINE":
+        threading.Thread(target=_offline_command_worker, args=(sender,), daemon=True).start()
+        return "🔍 Checking every charger on all networks… I'll send the offline list in a moment."
+
     # ── OPEN ───────────────────────────────────────────────────────────────────
     if cmd_upper == "OPEN":
         try:
@@ -696,6 +706,8 @@ def handle_agent_command(sender: str, command: str) -> str:
         f"Close a ticket, tell the customer, and record what you did\n\n"
         f"*OPEN*\n"
         f"See escalated tickets not yet resolved\n\n"
+        f"*OFFLINE*\n"
+        f"Live list of every offline charger\n\n"
         f"*PAUSE +27XXXXXXXXX*\n"
         f"Stop bot for a customer for {PAUSE_DURATION_HOURS} hours\n\n"
         f"*RESUME +27XXXXXXXXX*\n"
@@ -1993,6 +2005,13 @@ def metrics_init():
             escalated_at {num}, minutes {num}, customer_notified INTEGER)""")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ace_res_cust ON ace_resolutions (customer_full, resolved_at)")
         conn.commit()
+        cur.execute(f"""CREATE TABLE IF NOT EXISTS ace_charger_state (
+            charger_key TEXT PRIMARY KEY,
+            name TEXT, site TEXT, org_name TEXT, status TEXT,
+            offline_since {num}, updated_at {num})""")
+        cur.execute("CREATE TABLE IF NOT EXISTS ace_digest_runs (slot TEXT PRIMARY KEY, "
+                    f"claimed_at {num})")
+        conn.commit()
         where = "Postgres" if _USE_PG else f"SQLite file '{METRICS_DB_PATH}' (NOT durable on Render)"
         log.info(f"📊 Metrics storage ready: {where}")
     except Exception as e:
@@ -2220,6 +2239,234 @@ def _load_resolutions(days: int) -> list:
         conn.close()
 
 
+# ── Offline charger checks ────────────────────────────────────────────────────
+# AcE checks every charger on every Ampcontrol network at set times (SAST) and
+# sends the agents the list of offline chargers. Agents can also send OFFLINE
+# for a live list. Messages are free-form, so an agent must have messaged AcE
+# in the last 24 hours (the morning STATUS check-in covers this).
+OFFLINE_CHECK_TIMES = [t.strip() for t in os.environ.get("OFFLINE_CHECK_TIMES", "06:00,12:00,18:00").split(",")
+                       if re.fullmatch(r"\d{1,2}:\d{2}", t.strip())]
+OFFLINE_EXCLUDE     = [t.strip().lower() for t in os.environ.get("OFFLINE_CHECK_EXCLUDE", "").split(",") if t.strip()]
+OFFLINE_WINDOW_MINS = 30          # a missed minute / quick restart still sends within this window
+OFFLINE_CHUNK_CHARS = 1500        # Twilio's WhatsApp body limit is 1600 characters
+
+_PAGING_VARIANTS = ["/charge_points/?page={page}", "/charge_points/?pageNumber={page}",
+                    "/charge_points/?offset={offset}", "/charge_points/?skip={offset}"]
+_paging_variant = {"tmpl": None}
+
+
+def _fetch_org_chargers(org: dict):
+    """Returns (chargers, total) for one org, or (None, None) if the API call failed.
+    Follows paging if Ampcontrol returns fewer chargers than its reported total."""
+    data = ampcontrol_get("/charge_points/", org, timeout=20)
+    if data is None:
+        return None, None
+    items = [c for c in (data.get("data") or []) if isinstance(c, dict)]
+    total = data.get("total") if isinstance(data.get("total"), int) else None
+    seen  = {c.get("id") for c in items}
+    if total is not None and len(seen) < total:
+        order = ([_paging_variant["tmpl"]] if _paging_variant["tmpl"] else []) + \
+                [v for v in _PAGING_VARIANTS if v != _paging_variant["tmpl"]]
+        for tmpl in order:
+            page, grew = 2, False
+            while len(seen) < total and page <= 60:
+                d = ampcontrol_get(tmpl.format(page=page, offset=len(seen)), org, timeout=20)
+                new = [c for c in ((d or {}).get("data") or []) if isinstance(c, dict) and c.get("id") not in seen]
+                if not new:
+                    break
+                for c in new:
+                    seen.add(c.get("id")); items.append(c)
+                grew, page = True, page + 1
+            if grew:
+                _paging_variant["tmpl"] = tmpl
+                log.info(f"Ampcontrol paging for org '{org.get('name')}' works with {tmpl}")
+                break
+    return items, total
+
+
+def fetch_all_chargers() -> dict:
+    """Reads every charger from every configured org (in parallel)."""
+    orgs = list(AMPCONTROL_ORGS)
+    out = {"chargers": [], "failed": [], "incomplete": []}
+    if not orgs:
+        return out
+    with ThreadPoolExecutor(max_workers=min(5, len(orgs))) as ex:
+        results = list(ex.map(_fetch_org_chargers, orgs))
+    for org, (items, total) in zip(orgs, results):
+        oname = org.get("name") or f"Org {org['index']}"
+        if items is None:
+            out["failed"].append(oname)
+            continue
+        if total is not None and len(items) < total:
+            out["incomplete"].append((oname, len(items), total))
+        for c in items:
+            status = str(c.get("onlineStatus") or "").upper()
+            name = c.get("customName") or c.get("name") or c.get("ocppId") or str(c.get("id", ""))[-8:]
+            if not c.get("id") or not status:
+                continue
+            if any(x in str(name).lower() for x in OFFLINE_EXCLUDE):
+                continue
+            out["chargers"].append({
+                "key": f"{org['index']}:{c['id']}", "name": str(name), "status": status,
+                "site": c.get("networkName") or oname, "org": oname,
+                "online": status == "ONLINE"})
+    return out
+
+
+def update_charger_states(snapshot: dict, now: float) -> bool:
+    """Remembers when each charger was first seen offline. Adds 'since' and 'is_new'
+    to every charger in the snapshot. Returns True if this was the very first check."""
+    conn = None
+    first_run = False
+    try:
+        with _db_write_lock:
+            conn = _metrics_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT charger_key, offline_since FROM ace_charger_state")
+            prev = {k: v for k, v in cur.fetchall()}
+            first_run = not prev
+            for c in snapshot["chargers"]:
+                had = c["key"] in prev
+                before = prev.get(c["key"])
+                if c["online"]:
+                    c["since"], c["is_new"] = None, False
+                else:
+                    c["since"]  = before if before else now
+                    c["is_new"] = (not first_run) and (before is None)
+                cur.execute(_q(
+                    "INSERT INTO ace_charger_state (charger_key, name, site, org_name, status, offline_since, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (charger_key) DO UPDATE SET "
+                    "name = excluded.name, site = excluded.site, org_name = excluded.org_name, "
+                    "status = excluded.status, offline_since = excluded.offline_since, "
+                    "updated_at = excluded.updated_at"),
+                    (c["key"], c["name"], c["site"], c["org"], c["status"], c["since"], now))
+            conn.commit()
+    except Exception as e:
+        log.error(f"❌ Could not save charger states: {e}")
+        for c in snapshot["chargers"]:
+            c.setdefault("since", None if c["online"] else now)
+            c.setdefault("is_new", False)
+    finally:
+        if conn:
+            conn.close()
+    return first_run
+
+
+def build_offline_report(snapshot: dict, label: str, now: float) -> list:
+    """Turns a snapshot into WhatsApp-sized messages."""
+    chargers = snapshot["chargers"]
+    offline  = [c for c in chargers if not c["online"]]
+    warn = [f"⚠️ Could not read: {n}" for n in snapshot["failed"]] + \
+           [f"⚠️ List may be incomplete for {n}: saw {a} of {t} chargers" for n, a, t in snapshot["incomplete"]]
+    if not offline:
+        head = f"✅ *All chargers online — {label}*\n{len(chargers)} chargers checked."
+        return ["\n".join([head] + warn)]
+    lines = [f"🔴 *Offline chargers — {label}*",
+             f"{len(offline)} of {len(chargers)} chargers offline", ""]
+    by_site = {}
+    for c in offline:
+        by_site.setdefault(c["site"], []).append(c)
+    for site in sorted(by_site, key=str.lower):
+        lines.append(f"*{site}*")
+        for c in sorted(by_site[site], key=lambda x: (x["since"] or now, x["name"])):
+            age = now - (c["since"] or now)
+            when = ("just detected" if age < 90 else
+                    f"since {datetime.fromtimestamp(c['since'], SAST).strftime('%d %b %H:%M')} ({_fmt_dur(age)})")
+            lines.append(f"• {c['name']}{' 🆕' if c['is_new'] else ''} — {when}")
+        lines.append("")
+    lines += warn
+    lines.append("Send *OFFLINE* any time for a live list.")
+    chunks, cur = [], ""
+    for ln in lines:
+        if cur and len(cur) + len(ln) + 1 > OFFLINE_CHUNK_CHARS:
+            chunks.append(cur.rstrip()); cur = "(continued)\n"
+        cur += ln + "\n"
+    chunks.append(cur.rstrip())
+    return chunks
+
+
+def run_offline_check(label: str) -> list:
+    """Fetches every charger, updates the stored state and returns the messages to send."""
+    now = time.time()
+    snap = fetch_all_chargers()
+    update_charger_states(snap, now)
+    off = sum(1 for c in snap["chargers"] if not c["online"])
+    log.info(f"🔌 Offline check '{label}': {off} offline of {len(snap['chargers'])} "
+             f"(failed orgs: {snap['failed']}, incomplete: {snap['incomplete']})")
+    return build_offline_report(snap, label, now)
+
+
+def _offline_command_worker(sender: str):
+    try:
+        label = datetime.now(SAST).strftime("%H:%M")
+        for msg in run_offline_check(label):
+            send_whatsapp_message(sender, msg)
+    except Exception as e:
+        log.error(f"OFFLINE command error: {e}")
+        send_whatsapp_message(sender, "⚠️ I couldn't complete the charger check just now. Please try again shortly.")
+
+
+def _claim_digest_slot(slot: str) -> bool:
+    """True for exactly one caller per slot, even with several workers."""
+    conn = None
+    try:
+        with _db_write_lock:
+            conn = _metrics_conn()
+            cur = conn.cursor()
+            cur.execute(_q("INSERT INTO ace_digest_runs (slot, claimed_at) VALUES (?, ?) "
+                           "ON CONFLICT (slot) DO NOTHING"), (slot, time.time()))
+            conn.commit()
+            return cur.rowcount == 1
+    except Exception as e:
+        log.error(f"❌ Could not claim offline-check slot {slot}: {e}")
+        return False          # when unsure, skip rather than risk duplicates
+    finally:
+        if conn:
+            conn.close()
+
+
+def _send_offline_digest(label: str):
+    try:
+        msgs = run_offline_check(label)
+        for number, name in AGENT_NUMBERS.items():
+            sent_all = True
+            for m in msgs:
+                sent_all = send_whatsapp_message(number, m) and sent_all
+            if not sent_all:
+                log.warning(f"⚠️ Offline list not delivered to {name} — probably no message from them in the "
+                            f"last 24h. They can send OFFLINE for the list.")
+    except Exception as e:
+        log.error(f"❌ Scheduled offline check failed: {e}")
+
+
+def maybe_run_offline_digest(now_dt=None):
+    """Called every minute. Starts the scheduled check once per configured time slot."""
+    now_dt = now_dt or datetime.now(SAST)
+    for t in OFFLINE_CHECK_TIMES:
+        hh, mm = (int(x) for x in t.split(":"))
+        start = now_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if start <= now_dt < start + timedelta(minutes=OFFLINE_WINDOW_MINS):
+            slot = f"{start:%Y-%m-%d %H:%M}"
+            if _claim_digest_slot(slot):
+                log.info(f"⏰ Running scheduled offline-charger check for {slot}")
+                threading.Thread(target=_send_offline_digest, args=(f"{hh:02d}:{mm:02d}",),
+                                 daemon=True).start()
+                return True
+    return False
+
+
+def _load_offline_state() -> dict:
+    conn = _metrics_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name, site, status, offline_since, updated_at FROM ace_charger_state")
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    offline = [dict(zip(("name", "site", "status", "since", "updated"), r)) for r in rows if r[3] is not None]
+    return {"offline": offline, "total": len(rows), "last": max([r[4] for r in rows], default=None)}
+
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
 def _load_rows(days: int) -> list:
@@ -2430,6 +2677,26 @@ def dashboard():
                   + recent + "</table>") if recent else '<p class="empty">No finished conversations yet.</p>'
 
     now_ts = time.time()
+    try:
+        ost = _load_offline_state()
+    except Exception as e:
+        log.error(f"Dashboard offline-state error: {e}")
+        ost = {"offline": [], "total": 0, "last": None}
+    if ost["last"] is None:
+        off_tbl = '<p class="empty">No charger check has run yet. The first scheduled check will fill this in.</p>'
+        off_note = ""
+    else:
+        off_note = (f" — last checked {datetime.fromtimestamp(ost['last'], SAST):%d %b %H:%M}, "
+                    f"{len(ost['offline'])} of {ost['total']} offline")
+        off_rows = "".join(
+            f"<tr><td>{esc(o['site'] or '–')}</td><td>{esc(o['name'] or '–')}</td>"
+            f"<td>{esc(o['status'] or '')}</td>"
+            f"<td>{datetime.fromtimestamp(o['since'], SAST):%d %b %H:%M}</td>"
+            f"<td class='n'>{_fmt_dur(now_ts - o['since'])}</td></tr>"
+            for o in sorted(ost["offline"], key=lambda o: ((o["site"] or "").lower(), o["since"])))
+        off_tbl = ('<table><tr><th>Site</th><th>Charger</th><th>Status</th><th>Offline since</th>'
+                   '<th class="n">For</th></tr>' + off_rows + "</table>") if off_rows else \
+                  '<p class="empty">All chargers were online at the last check. 🎉</p>'
     open_rows = "".join(
         f"<tr><td>{esc(t['customer'])}</td><td>{esc(t['charger'] or '–')}</td>"
         f"<td>{esc(t['site'] or '–')}</td><td>{esc(t['fault_type'] or '–')}</td>"
@@ -2468,6 +2735,7 @@ def dashboard():
         f'<a href="/dashboard/export.csv?days={days}">⬇ CSV</a>'
         f'<a href="/dashboard/resolutions.csv?days={days}">⬇ Resolutions</a></div></header><main>'
         f"{warn}<div class='kpis'>{kpis}</div>"
+        f"<div class='card' style='margin-bottom:16px'><h2>Offline chargers{off_note}</h2>{off_tbl}</div>"
         f"<div class='card' style='margin-bottom:16px'><h2>Open tickets — escalated, not yet resolved</h2>{open_tbl}</div>"
         f"<div class='card' style='margin-bottom:16px'><h2>Closed by agents</h2>{res_tbl}</div>"
         f"<div class='card' style='margin-bottom:16px'><h2>Daily trend (last {n_days} days)</h2>{trend}</div>"
