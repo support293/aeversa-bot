@@ -559,6 +559,73 @@ def is_paused(customer_number: str) -> bool:
     return True
 
 
+def record_agent_checkin(agent_wa: str, text: str):
+    """Remember when each agent last messaged AcE (their 24h WhatsApp window)."""
+    conn = None
+    try:
+        with _db_write_lock:
+            conn = _metrics_conn()
+            cur = conn.cursor()
+            cur.execute(_q(
+                "INSERT INTO ace_agent_checkins (agent_wa, name, last_msg_at, last_cmd, msg_count) "
+                "VALUES (?, ?, ?, ?, 1) ON CONFLICT (agent_wa) DO UPDATE SET "
+                "name = excluded.name, last_msg_at = excluded.last_msg_at, "
+                "last_cmd = excluded.last_cmd, msg_count = ace_agent_checkins.msg_count + 1"),
+                (agent_wa, AGENT_NUMBERS.get(agent_wa, "Agent"), time.time(),
+                 (text or "")[:40]))
+            conn.commit()
+    except Exception as e:
+        log.error(f"Could not record agent check-in: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def load_agent_checkins() -> list:
+    """One row per configured agent, including agents who have never messaged."""
+    seen = {}
+    conn = None
+    try:
+        conn = _metrics_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT agent_wa, last_msg_at, last_cmd, msg_count FROM ace_agent_checkins")
+        seen = {r[0]: r for r in cur.fetchall()}
+    except Exception as e:
+        log.error(f"Could not load agent check-ins: {e}")
+    finally:
+        if conn:
+            conn.close()
+    now = time.time()
+    rows = []
+    for wa, name in AGENT_NUMBERS.items():
+        r = seen.get(wa)
+        last = r[1] if r else None
+        rows.append({"name": name, "number": wa.replace("whatsapp:", ""),
+                     "last": last, "cmd": (r[2] if r else "") or "",
+                     "count": (r[3] if r else 0) or 0,
+                     "active": last is not None and now - last < 86400,
+                     "ago": (now - last) if last is not None else None})
+    rows.sort(key=lambda x: (not x["active"], x["name"].lower()))
+    return rows
+
+
+def build_checkin_report() -> str:
+    rows = load_agent_checkins()
+    ok = sum(1 for r in rows if r["active"])
+    lines = [f"🧑‍💼 *Agent check-ins — {ok} of {len(rows)} active (last 24h)*\n"]
+    for r in rows:
+        if r["last"] is None:
+            lines.append(f"🔴 *{r['name']}* — has not messaged AcE yet")
+        else:
+            when = datetime.fromtimestamp(r["last"], SAST).strftime("%d %b %H:%M")
+            icon = "🟢" if r["active"] else "🔴"
+            tail = "" if r["active"] else " — window closed, won't receive AcE alerts"
+            lines.append(f"{icon} *{r['name']}* — {when} ({_fmt_dur(r['ago'])} ago){tail}")
+    if ok < len(rows):
+        lines.append("\nAgents marked 🔴 must send *STATUS* to AcE to start receiving alerts.")
+    return "\n".join(lines)
+
+
 def handle_agent_command(sender: str, command: str) -> str:
     """Processes commands sent by agents to control AcE."""
     agent_name = AGENT_NUMBERS.get(sender, "Agent")
@@ -674,6 +741,10 @@ def handle_agent_command(sender: str, command: str) -> str:
             lines.append("⚠️ The resolution could not be saved to the dashboard — please tell Given.")
         return "\n".join(lines)
 
+    # ── CHECKIN ────────────────────────────────────────────────────────────────
+    if cmd_upper == "CHECKIN":
+        return build_checkin_report()
+
     # ── OFFLINE ────────────────────────────────────────────────────────────────
     if cmd_upper == "OFFLINE":
         threading.Thread(target=_offline_command_worker, args=(sender,), daemon=True).start()
@@ -708,6 +779,8 @@ def handle_agent_command(sender: str, command: str) -> str:
         f"See escalated tickets not yet resolved\n\n"
         f"*OFFLINE*\n"
         f"Live list of every offline charger\n\n"
+        f"*CHECKIN*\n"
+        f"See which agents have messaged AcE in the last 24h\n\n"
         f"*PAUSE +27XXXXXXXXX*\n"
         f"Stop bot for a customer for {PAUSE_DURATION_HOURS} hours\n\n"
         f"*RESUME +27XXXXXXXXX*\n"
@@ -2011,6 +2084,9 @@ def metrics_init():
             offline_since {num}, updated_at {num})""")
         cur.execute("CREATE TABLE IF NOT EXISTS ace_digest_runs (slot TEXT PRIMARY KEY, "
                     f"claimed_at {num})")
+        cur.execute(f"""CREATE TABLE IF NOT EXISTS ace_agent_checkins (
+            agent_wa TEXT PRIMARY KEY, name TEXT, last_msg_at {num}, last_cmd TEXT,
+            msg_count INTEGER)""")
         conn.commit()
         where = "Postgres" if _USE_PG else f"SQLite file '{METRICS_DB_PATH}' (NOT durable on Render)"
         log.info(f"📊 Metrics storage ready: {where}")
@@ -2698,6 +2774,18 @@ def dashboard():
         off_tbl = ('<table><tr><th>Site</th><th>Charger</th><th>Status</th><th>Offline since</th>'
                    '<th class="n">For</th></tr>' + off_rows + "</table>") if off_rows else \
                   '<p class="empty">All chargers were online at the last check. 🎉</p>'
+    try:
+        ck_rows = "".join(
+            f"<tr><td>{'🟢' if c['active'] else '🔴'} {esc(c['name'])}</td>"
+            f"<td>{esc(c['number'])}</td>"
+            f"<td>{datetime.fromtimestamp(c['last'], SAST).strftime('%d %b %H:%M') if c['last'] else 'never'}</td>"
+            f"<td class='n'>{_fmt_dur(c['ago']) + ' ago' if c['ago'] is not None else '–'}</td>"
+            f"<td>{esc(c['cmd'])}</td></tr>" for c in load_agent_checkins())
+        ck_tbl = ('<table><tr><th>Agent</th><th>Number</th><th>Last message</th>'
+                  '<th class="n">Ago</th><th>Last command</th></tr>' + ck_rows + "</table>")
+    except Exception as e:
+        log.error(f"Dashboard check-in error: {e}")
+        ck_tbl = '<p class="empty">Agent check-ins unavailable right now.</p>'
     open_rows = "".join(
         f"<tr><td>{esc(t['customer'])}</td><td>{esc(t['charger'] or '–')}</td>"
         f"<td>{esc(t['site'] or '–')}</td><td>{esc(t['fault_type'] or '–')}</td>"
@@ -2737,6 +2825,7 @@ def dashboard():
         f'<a href="/dashboard/resolutions.csv?days={days}">⬇ Resolutions</a></div></header><main>'
         f"{warn}<div class='kpis'>{kpis}</div>"
         f"<div class='card' style='margin-bottom:16px'><h2>Offline chargers{off_note}</h2>{off_tbl}</div>"
+        f"<div class='card' style='margin-bottom:16px'><h2>Agent check-ins (🟢 = messaged AcE in last 24h)</h2>{ck_tbl}</div>"
         f"<div class='card' style='margin-bottom:16px'><h2>Open tickets — escalated, not yet resolved</h2>{open_tbl}</div>"
         f"<div class='card' style='margin-bottom:16px'><h2>Closed by agents</h2>{res_tbl}</div>"
         f"<div class='card' style='margin-bottom:16px'><h2>Daily trend (last {n_days} days)</h2>{trend}</div>"
@@ -5325,6 +5414,7 @@ def webhook():
     # ── Agent command handling ────────────────────────────────────────────────
     if sender in AGENT_NUMBERS:
         log.info(f"Agent command from {AGENT_NUMBERS[sender]}: {incoming}")
+        record_agent_checkin(sender, incoming)
         response_text = handle_agent_command(sender, incoming)
         resp = MessagingResponse()
         resp.message(response_text)
